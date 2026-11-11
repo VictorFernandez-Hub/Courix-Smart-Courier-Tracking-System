@@ -1,0 +1,156 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Courrier Express API",
+    "version": "1.0.0",
+    "description": "API de gestion de envios de courier: pedidos, rutas, repartidores, pagos e incidencias."
+  },
+  "servers": [{ "url": "/" }],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" }
+    }
+  },
+  "security": [{ "bearerAuth": [] }],
+  "paths": {
+    "/login": {
+      "post": {
+        "summary": "Iniciar sesion",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["email", "password"],
+                "properties": {
+                  "email": { "type": "string" },
+                  "password": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Login exitoso, devuelve accessToken" },
+          "401": { "description": "Credenciales incorrectas" }
+        }
+      }
+    },
+    "/pedidos": {
+      "get": {
+        "summary": "Listar pedidos (paginado, filtrable por estado/cliente/busqueda)",
+        "parameters": [
+          { "name": "estado", "in": "query", "schema": { "type": "string" } },
+          { "name": "cliente_id", "in": "query", "schema": { "type": "integer" } },
+          { "name": "q", "in": "query", "description": "Busca por codigo de guia, nombre o telefono del cliente", "schema": { "type": "string" } },
+          { "name": "pagina", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "por_pagina", "in": "query", "schema": { "type": "integer", "default": 20 } }
+        ],
+        "responses": { "200": { "description": "Lista paginada de pedidos" } }
+      }
+    },
+    "/pedido": {
+      "post": {
+        "summary": "Crear un pedido (admin/operador). Si no se envia 'monto', se intenta calcular con la tarifa de zona registrada.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["clienteId", "usuarioId", "almacenId", "direccionEntregaId"],
+                "properties": {
+                  "clienteId": { "type": "integer" },
+                  "usuarioId": { "type": "integer" },
+                  "almacenId": { "type": "integer" },
+                  "direccionEntregaId": { "type": "integer" },
+                  "monto": { "type": "number" },
+                  "pesoKg": { "type": "number" },
+                  "descripcionProducto": { "type": "string" },
+                  "yaEnAlmacen": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "201": { "description": "Pedido creado" } }
+      }
+    },
+    "/pedido/{id}/tomar": {
+      "post": {
+        "summary": "Un repartidor toma un pedido del pool de su zona",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Pedido asignado" }, "409": { "description": "Ya tomado / repartidor no disponible" } }
+      }
+    },
+    "/pedido/{id}/estado": {
+      "post": {
+        "summary": "Cambiar el estado de un pedido segun la maquina de estados del negocio",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Estado actualizado" }, "409": { "description": "Transicion no permitida" } }
+      }
+    },
+    "/pedido/{id}/entregar-y-cobrar": {
+      "post": {
+        "summary": "Marca el pedido como entregado y registra el pago en un solo paso",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Entregado y pago registrado" } }
+      }
+    },
+    "/rastreo/{codigoGuia}": {
+      "get": {
+        "summary": "Rastreo publico por codigo de guia (sin login)",
+        "security": [],
+        "parameters": [{ "name": "codigoGuia", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Estado actual e historial del envio" }, "404": { "description": "No existe ese codigo" } }
+      }
+    },
+    "/rutas": {
+      "get": { "summary": "Listar rutas", "responses": { "200": { "description": "Lista de rutas" } } }
+    },
+    "/ruta/{id}/agregar-pedido": {
+      "post": {
+        "summary": "Agregar un pedido disponible a una ruta propia",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Pedido agregado a la ruta" } }
+      }
+    },
+    "/pagos": {
+      "get": { "summary": "Listar pagos (admin/operador)", "responses": { "200": { "description": "Lista de pagos" } } }
+    },
+    "/tarifas": {
+      "get": { "summary": "Listar tarifas por par de zonas", "responses": { "200": { "description": "Lista de tarifas" } } }
+    },
+    "/tarifa": {
+      "post": {
+        "summary": "Crear una tarifa base + costo por kg entre dos zonas (admin)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["zonaOrigenId", "zonaDestinoId", "precioBase", "precioPorKg"],
+                "properties": {
+                  "zonaOrigenId": { "type": "integer" },
+                  "zonaDestinoId": { "type": "integer" },
+                  "precioBase": { "type": "number" },
+                  "precioPorKg": { "type": "number" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "201": { "description": "Tarifa creada" } }
+      }
+    },
+    "/incidencias": {
+      "get": { "summary": "Listar incidencias (admin/operador)", "responses": { "200": { "description": "Lista de incidencias" } } }
+    },
+    "/reportes/resumen": {
+      "get": { "summary": "Resumen general del negocio (pedidos por estado, cobros, rutas activas)", "responses": { "200": { "description": "Resumen" } } }
+    }
+  }
+}
