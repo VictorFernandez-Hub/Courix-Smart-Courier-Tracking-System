@@ -14,11 +14,17 @@ def test_pendiente_solo_puede_cancelarse():
     assert puedeTransicionar('pendiente', 'asignado') is False
 
 
-def test_en_almacen_solo_puede_cancelarse():
+def test_en_almacen_solo_puede_cancelarse_devolverse_o_perderse():
     # "asignado" se alcanza por /pedido/<id>/tomar o /ruta/<id>/agregar-pedido,
     # no por el endpoint generico de cambio de estado.
     assert puedeTransicionar('en_almacen', 'cancelado') is True
+    assert puedeTransicionar('en_almacen', 'por_devolver') is True
+    assert puedeTransicionar('en_almacen', 'extraviado') is True
     assert puedeTransicionar('en_almacen', 'asignado') is False
+
+
+def test_en_transito_solo_sale_por_manifiesto_o_extravio():
+    assert TRANSICIONES_VALIDAS['en_transito'] == ['extraviado']
 
 
 def test_flujo_feliz_completo():
@@ -28,13 +34,16 @@ def test_flujo_feliz_completo():
 
 def test_no_entregado_permite_reintentar_o_devolver():
     assert puedeTransicionar('no_entregado', 'asignado') is True
-    assert puedeTransicionar('no_entregado', 'devuelto') is True
+    assert puedeTransicionar('no_entregado', 'por_devolver') is True
+    # "devuelto" = ya lo recibio el remitente: no se salta la devolucion
+    assert puedeTransicionar('no_entregado', 'devuelto') is False
+    assert puedeTransicionar('por_devolver', 'devuelto') is True
     assert puedeTransicionar('no_entregado', 'cancelado') is True
     assert puedeTransicionar('no_entregado', 'entregado') is False
 
 
 def test_estados_finales_no_tienen_salida():
-    for estadoFinal in ('entregado', 'devuelto', 'cancelado'):
+    for estadoFinal in ('entregado', 'devuelto', 'cancelado', 'extraviado'):
         for estadoDestino in TRANSICIONES_VALIDAS:
             assert puedeTransicionar(estadoFinal, estadoDestino) is False, (
                 f'"{estadoFinal}" es un estado final y no deberia poder pasar a "{estadoDestino}"'

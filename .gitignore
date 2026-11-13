@@ -25,3 +25,6 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 .idea/
+
+# Credenciales generadas localmente (borrar despues de leer)
+ADMIN_CREDENCIALES.txt

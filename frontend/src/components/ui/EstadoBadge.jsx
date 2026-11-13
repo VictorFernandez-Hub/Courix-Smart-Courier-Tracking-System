@@ -1,13 +1,17 @@
 const ETIQUETAS = {
   pendiente: 'Pendiente',
   en_almacen: 'En almacén',
+  en_transito: 'En tránsito',
+  en_agencia_destino: 'En agencia destino',
   asignado: 'Asignado',
   recogido: 'Recogido',
   en_camino: 'En camino',
   entregado: 'Entregado',
   no_entregado: 'No entregado',
-  devuelto: 'Devuelto',
+  por_devolver: 'Por devolver',
+  devuelto: 'Devuelto al remitente',
   cancelado: 'Cancelado',
+  extraviado: 'Extraviado',
 }
 
 export default function EstadoBadge({ estado }) {

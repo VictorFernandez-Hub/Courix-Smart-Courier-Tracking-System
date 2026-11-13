@@ -82,3 +82,29 @@ export async function apiFetch(path, options = {}, reintento = true) {
   }
   return data
 }
+
+// Descarga un archivo (CSV, PDF...) del backend con la sesion actual y lo
+// entrega al navegador con su nombre original.
+export async function apiDescargar(path, nombrePorDefecto = 'archivo', reintento = true) {
+  const token = getToken()
+  const res = await fetch(`${API_URL}${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    if (res.status === 401 && reintento && data.codigo === 'token_expirado' && (await renovarToken())) {
+      return apiDescargar(path, nombrePorDefecto, false)
+    }
+    const error = new Error(data.message || 'No se pudo descargar el archivo')
+    error.status = res.status
+    throw error
+  }
+  const disposicion = res.headers.get('Content-Disposition') || ''
+  const nombre = (disposicion.match(/filename="?([^"]+)"?/) || [])[1] || nombrePorDefecto
+  const url = URL.createObjectURL(await res.blob())
+  const enlace = document.createElement('a')
+  enlace.href = url
+  enlace.download = nombre
+  document.body.appendChild(enlace)
+  enlace.click()
+  enlace.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}

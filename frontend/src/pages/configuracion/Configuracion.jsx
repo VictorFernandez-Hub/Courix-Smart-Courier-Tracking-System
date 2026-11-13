@@ -1,19 +1,21 @@
 import { useEffect, useState } from 'react'
 import Modal from '../../components/ui/Modal'
+import Tarifas from './Tarifas.jsx'
 import { getUsuario } from '../../api'
 import {
   listarUsuarios, crearUsuario, editarUsuario, desactivarUsuario, activarUsuario, restablecerPassword,
   listarZonas, crearZona, editarZona,
-  listarRepartidores, crearRepartidorPerfil, editarRepartidor, cambiarDisponibilidadRepartidor,
+  listarAlmacenes, listarRepartidores, crearRepartidorPerfil, editarRepartidor, cambiarDisponibilidadRepartidor,
 } from '../../api'
 
 const SECCIONES = [
   { id: 'usuarios', label: 'Usuarios' },
   { id: 'zonas', label: 'Zonas' },
+  { id: 'tarifas', label: 'Tarifas' },
   { id: 'repartidores', label: 'Repartidores' },
 ]
 
-const FORM_USUARIO_VACIO = { nombre: '', email: '', password: '', rol: 'operador' }
+const FORM_USUARIO_VACIO = { nombre: '', usuario: '', dni: '', celular: '', email: '', direccion: '', password: '', rol: 'operador', agenciaId: '' }
 const FORM_ZONA_VACIO = { nombre: '', referencia: '' }
 const FORM_REPARTIDOR_VACIO = { usuarioId: '', zonaId: '', telefono: '', vehiculo: '', placa: '' }
 
@@ -23,6 +25,7 @@ export default function Configuracion() {
 
   const [usuarios, setUsuarios] = useState([])
   const [zonas, setZonas] = useState([])
+  const [agencias, setAgencias] = useState([])
   const [repartidores, setRepartidores] = useState([])
 
   const [cargando, setCargando] = useState(true)
@@ -65,8 +68,9 @@ export default function Configuracion() {
   function cargarTodo() {
     setCargando(true)
     setError('')
-    Promise.all([listarUsuarios(), listarZonas(), listarRepartidores()])
-      .then(([u, z, r]) => {
+    Promise.all([listarUsuarios(), listarZonas(), listarRepartidores(), listarAlmacenes()])
+      .then(([u, z, r, a]) => {
+        setAgencias(a.content)
         setUsuarios(u.content)
         setZonas(z.content)
         setRepartidores(r.content)
@@ -103,7 +107,7 @@ export default function Configuracion() {
     setErrorForm('')
     setModoEdicion(true)
     setIdEditando(item.id)
-    if (tipo === 'usuario') setFormUsuario({ nombre: item.nombre, email: item.email, password: '', rol: item.rol })
+    if (tipo === 'usuario') setFormUsuario({ nombre: item.nombre, usuario: item.nombreUsuario, dni: item.dni || '', celular: item.celular || '', email: item.email, direccion: item.direccion || '', password: '', rol: item.rol, agenciaId: item.agenciaId ? String(item.agenciaId) : '' })
     if (tipo === 'zona') setFormZona({ nombre: item.nombre, referencia: item.referencia || '' })
     if (tipo === 'repartidor') setFormRepartidor({ usuarioId: item.usuarioId, zonaId: item.zonaId || '', telefono: item.telefono || '', vehiculo: item.vehiculo || '', placa: item.placa || '' })
     setModalAbierto(tipo)
@@ -115,10 +119,11 @@ export default function Configuracion() {
     setEnviando(true)
     try {
       if (modoEdicion) {
-        await editarUsuario(idEditando, { nombre: formUsuario.nombre, rol: formUsuario.rol })
+        const { password, ...datos } = formUsuario // eslint-disable-line no-unused-vars
+        await editarUsuario(idEditando, { ...datos, agenciaId: datos.agenciaId ? Number(datos.agenciaId) : null })
         mostrarMensaje('Usuario actualizado')
       } else {
-        await crearUsuario(formUsuario)
+        await crearUsuario({ ...formUsuario, agenciaId: formUsuario.agenciaId ? Number(formUsuario.agenciaId) : undefined })
         mostrarMensaje(`Usuario "${formUsuario.nombre}" creado`)
       }
       setModalAbierto(null)
@@ -249,8 +254,12 @@ export default function Configuracion() {
                 {usuarios.map((u) => (
                   <div className="mini-card" key={u.id}>
                     <div className="mini-card-name">{u.nombre}</div>
+                    <div className="mini-card-line"><span>Usuario</span><span className="cell-mono">{u.nombreUsuario}</span></div>
+                    <div className="mini-card-line"><span>DNI</span><span className="cell-mono">{u.dni || '—'}</span></div>
+                    <div className="mini-card-line"><span>Celular</span><span className="cell-mono">{u.celular || '—'}</span></div>
                     <div className="mini-card-line"><span>Email</span><span className="cell-mono">{u.email}</span></div>
                     <div className="mini-card-line"><span>Rol</span><span style={{ textTransform: 'capitalize' }}>{u.rol}</span></div>
+                    <div className="mini-card-line"><span>Agencia</span><span>{agencias.find((a) => a.id === u.agenciaId)?.nombre || 'Todas'}</span></div>
                     <div className="mini-card-line"><span>Estado</span><span>{u.activo ? 'Activo' : 'Inactivo'}</span></div>
                     <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
                       <button className="btn btn-secondary" style={{ flex: 1, fontSize: 12.5 }} onClick={() => abrirModalEditar('usuario', u)}>
@@ -298,6 +307,8 @@ export default function Configuracion() {
               </div>
             </>
           )}
+
+          {seccion === 'tarifas' && <Tarifas zonas={zonas} onMensaje={mostrarMensaje} />}
 
           {seccion === 'repartidores' && (
             <>
@@ -347,10 +358,38 @@ export default function Configuracion() {
                 onChange={(e) => setFormUsuario((f) => ({ ...f, nombre: e.target.value }))} />
             </div>
             <div className="field">
+              <label htmlFor="uUsuario">Usuario (para iniciar sesión)</label>
+              <input id="uUsuario" required minLength={3} maxLength={30} autoComplete="off"
+                pattern="[A-Za-z0-9][A-Za-z0-9._\-]{1,28}[A-Za-z0-9]"
+                title="3 a 30 caracteres: letras, números, punto, guion o guion bajo, sin espacios"
+                value={formUsuario.usuario}
+                onChange={(e) => setFormUsuario((f) => ({ ...f, usuario: e.target.value.toLowerCase().trim() }))} />
+              <p className="cell-secondary" style={{ marginTop: 4 }}>Ej. jperez o j.perez. Sin espacios ni tildes.</p>
+            </div>
+            <div className="form-2col">
+              <div className="field">
+                <label htmlFor="uDni">DNI</label>
+                <input id="uDni" required={!modoEdicion} inputMode="numeric" minLength={6} maxLength={15}
+                  pattern="[A-Za-z0-9]{6,15}" title="6 a 15 letras o números" value={formUsuario.dni}
+                  onChange={(e) => setFormUsuario((f) => ({ ...f, dni: e.target.value }))} />
+              </div>
+              <div className="field">
+                <label htmlFor="uCelular">Celular</label>
+                <input id="uCelular" type="tel" required={!modoEdicion} inputMode="tel" maxLength={20}
+                  placeholder="987654321" autoComplete="off" value={formUsuario.celular}
+                  onChange={(e) => setFormUsuario((f) => ({ ...f, celular: e.target.value }))} />
+              </div>
+            </div>
+            <div className="field">
               <label htmlFor="uEmail">Correo</label>
-              <input id="uEmail" type="email" required disabled={modoEdicion} value={formUsuario.email}
+              <input id="uEmail" type="email" required value={formUsuario.email}
                 onChange={(e) => setFormUsuario((f) => ({ ...f, email: e.target.value }))} />
-              {modoEdicion && <p className="cell-secondary" style={{ marginTop: 4 }}>El correo no se puede cambiar.</p>}
+              <p className="cell-secondary" style={{ marginTop: 4 }}>Aquí llega el enlace si olvida su contraseña.</p>
+            </div>
+            <div className="field">
+              <label htmlFor="uDireccion">Dirección <span className="cell-secondary">(opcional)</span></label>
+              <input id="uDireccion" maxLength={200} placeholder="Av. Principal 123, distrito" autoComplete="off"
+                value={formUsuario.direccion} onChange={(e) => setFormUsuario((f) => ({ ...f, direccion: e.target.value }))} />
             </div>
             {!modoEdicion && (
               <div className="field">
@@ -370,6 +409,19 @@ export default function Configuracion() {
                 <option value="repartidor">Repartidor</option>
               </select>
             </div>
+            {formUsuario.rol !== 'repartidor' && (
+              <div className="field">
+                <label htmlFor="uAgencia">Agencia</label>
+                <select id="uAgencia" value={formUsuario.agenciaId}
+                  onChange={(e) => setFormUsuario((f) => ({ ...f, agenciaId: e.target.value }))}>
+                  <option value="">Todas (sin restricción)</option>
+                  {agencias.map((a) => <option key={a.id} value={a.id}>{a.nombre}</option>)}
+                </select>
+                <p className="cell-secondary" style={{ marginTop: 4 }}>
+                  Un operador con agencia solo ve y opera los envíos que salen o llegan a ella.
+                </p>
+              </div>
+            )}
             <div className="modal-actions">
               <button type="button" className="btn btn-secondary" onClick={() => setModalAbierto(null)}>Cancelar</button>
               <button type="submit" className="btn btn-primary" disabled={enviando}>
@@ -419,7 +471,7 @@ export default function Configuracion() {
                   onChange={(e) => setFormRepartidor((f) => ({ ...f, usuarioId: e.target.value }))}>
                   <option value="">Selecciona un usuario</option>
                   {usuariosRepartidorSinPerfil.map((u) => (
-                    <option key={u.id} value={u.id}>{u.nombre} ({u.email})</option>
+                    <option key={u.id} value={u.id}>{u.nombre} ({u.nombreUsuario})</option>
                   ))}
                 </select>
               </div>

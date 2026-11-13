@@ -1,271 +1,243 @@
-import { useEffect, useState } from 'react'
-import Modal from '../../components/ui/Modal'
-import EstadoBadge from '../../components/ui/EstadoBadge'
-import {
-  listarClientes, crearCliente, listarZonas,
-  listarDireccionesCliente, crearDireccionCliente,
-  listarPedidos, listarEstados,
-} from '../../api'
+// Gestion de clientes: indicadores, busqueda con filtros, listado paginado
+// con actividad de cada cliente, ficha 360 y exportacion.
+import { useCallback, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import ClienteForm from './ClienteForm'
+import FichaCliente from './FichaCliente'
+import { buscarClientes, exportarClientes, listarZonas, getUsuario } from '../../api'
+import { ETIQUETA_DOC, fechaCorta, haceCuanto, enlaceWhatsApp, iniciales } from './formato'
 
-const FORM_CLIENTE_VACIO = { nombre: '', dni: '', telefono: '', email: '' }
-const FORM_DIRECCION_VACIO = { etiqueta: '', calle: '', referencia: '', zonaId: '' }
+const POR_PAGINA = 20
 
 export default function Clientes() {
-  const [clientes, setClientes] = useState([])
-  const [zonas, setZonas] = useState([])
+  const esAdmin = getUsuario()?.rol === 'admin'
+  // Filtros en la URL: se pueden compartir y sobreviven al recargar
+  const [params, setParams] = useSearchParams()
+  const filtros = {
+    q: params.get('q') || '',
+    estado: params.get('estado') || 'activos',
+    tipo: params.get('tipo') || '',
+    avisos: params.get('avisos') || '',
+    orden: params.get('orden') || 'actividad',
+    pagina: Number(params.get('pagina')) || 1,
+  }
+  const fichaId = Number(params.get('ficha')) || null
+
+  const [busqueda, setBusqueda] = useState(filtros.q)
+  const [datos, setDatos] = useState({ content: [], paginacion: {}, resumen: null })
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState('')
+  const [mensaje, setMensaje] = useState('')
+  const [zonas, setZonas] = useState([])
+  const [form, setForm] = useState(null) // null cerrado | { cliente?: {...} }
+  const [versionFicha, setVersionFicha] = useState(0)
+  const [exportando, setExportando] = useState(false)
 
-  const [mostrarModalCliente, setMostrarModalCliente] = useState(false)
-  const [formCliente, setFormCliente] = useState(FORM_CLIENTE_VACIO)
-  const [enviandoCliente, setEnviandoCliente] = useState(false)
-  const [errorCliente, setErrorCliente] = useState('')
-
-  const [clienteDireccion, setClienteDireccion] = useState(null) // cliente sobre el que se agrega direccion
-  const [direccionesVistas, setDireccionesVistas] = useState({}) // { clienteId: [direcciones] }
-  const [formDireccion, setFormDireccion] = useState(FORM_DIRECCION_VACIO)
-  const [enviandoDireccion, setEnviandoDireccion] = useState(false)
-
-  const [clienteHistorial, setClienteHistorial] = useState(null)
-  const [pedidosHistorial, setPedidosHistorial] = useState([])
-  const [estados, setEstados] = useState([])
-  const [cargandoHistorial, setCargandoHistorial] = useState(false)
-
-  useEffect(() => {
-    cargarClientes()
-    listarZonas().then((r) => setZonas(r.content)).catch(() => {})
-    listarEstados().then((r) => setEstados(r.content)).catch(() => {})
-  }, [])
-
-  function cargarClientes() {
-    setCargando(true)
-    listarClientes()
-      .then((r) => setClientes(r.content))
-      .catch((err) => setError(err.message))
-      .finally(() => setCargando(false))
-  }
-
-  function abrirModalCliente() {
-    setFormCliente(FORM_CLIENTE_VACIO)
-    setErrorCliente('')
-    setMostrarModalCliente(true)
-  }
-
-  async function manejarEnvioCliente(e) {
-    e.preventDefault()
-    setErrorCliente('')
-    setEnviandoCliente(true)
-    try {
-      await crearCliente(formCliente)
-      setMostrarModalCliente(false)
-      cargarClientes()
-    } catch (err) {
-      setErrorCliente(err.message)
-    } finally {
-      setEnviandoCliente(false)
-    }
-  }
-
-  function verDirecciones(cliente) {
-    if (direccionesVistas[cliente.id]) {
-      setDireccionesVistas((d) => {
-        const copia = { ...d }
-        delete copia[cliente.id]
-        return copia
+  const cambiarFiltros = useCallback((cambios, reiniciarPagina = true) => {
+    setParams((actual) => {
+      const nuevo = new URLSearchParams(actual)
+      Object.entries({ ...cambios, ...(reiniciarPagina ? { pagina: 1 } : {}) }).forEach(([k, v]) => {
+        if (v === '' || v === null || v === undefined || (k === 'pagina' && v === 1)) nuevo.delete(k)
+        else nuevo.set(k, v)
       })
-      return
-    }
-    listarDireccionesCliente(cliente.id).then((r) => {
-      setDireccionesVistas((d) => ({ ...d, [cliente.id]: r.content }))
-    })
+      return nuevo
+    }, { replace: true })
+  }, [setParams])
+
+  const { q, estado, tipo, avisos, orden, pagina } = filtros
+  const cargar = useCallback(() => {
+    setCargando(true)
+    setError('')
+    return buscarClientes({ q, estado, tipo, avisos, orden, pagina, por_pagina: POR_PAGINA })
+      .then(setDatos)
+      .catch((e) => setError(e.message))
+      .finally(() => setCargando(false))
+  }, [q, estado, tipo, avisos, orden, pagina])
+
+  useEffect(() => { cargar() }, [cargar])
+  useEffect(() => { listarZonas().then((r) => setZonas(r.content)).catch(() => {}) }, [])
+
+  // Busqueda con espera: no se consulta en cada tecla
+  useEffect(() => {
+    const t = setTimeout(() => { if (busqueda.trim() !== q) cambiarFiltros({ q: busqueda.trim() }) }, 350)
+    return () => clearTimeout(t)
+  }, [busqueda, q, cambiarFiltros])
+
+  function avisar(texto) {
+    setMensaje(texto)
+    setTimeout(() => setMensaje(''), 3500)
   }
 
-  function abrirModalDireccion(cliente) {
-    setFormDireccion(FORM_DIRECCION_VACIO)
-    setClienteDireccion(cliente)
-  }
-
-  function nombreEstado(estadoId) {
-    const e = estados.find((e) => e.id === estadoId)
-    return e ? e.nombre : 'pendiente'
-  }
-
-  function abrirHistorial(cliente) {
-    setClienteHistorial(cliente)
-    setCargandoHistorial(true)
-    listarPedidos(undefined, 1, cliente.id)
-      .then((r) => setPedidosHistorial(r.content))
-      .catch(() => setPedidosHistorial([]))
-      .finally(() => setCargandoHistorial(false))
-  }
-
-  async function manejarEnvioDireccion(e) {
-    e.preventDefault()
-    setEnviandoDireccion(true)
+  async function exportar() {
+    setExportando(true)
+    setError('')
     try {
-      await crearDireccionCliente({ ...formDireccion, clienteId: clienteDireccion.id })
-      setClienteDireccion(null)
-      delete direccionesVistas[clienteDireccion.id]
-      verDirecciones(clienteDireccion)
-    } catch (err) {
-      setError(err.message)
+      await exportarClientes({ q, estado, tipo, avisos })
+    } catch (e) {
+      setError(e.message)
     } finally {
-      setEnviandoDireccion(false)
+      setExportando(false)
     }
   }
+
+  const { content: clientes, paginacion, resumen } = datos
+  const hayFiltros = q || estado !== 'activos' || tipo || avisos
+  const abrirFicha = (id) => cambiarFiltros({ ficha: id }, false)
 
   return (
     <div>
       <div className="page-header">
         <div>
           <h1>Clientes</h1>
-          <p className="page-sub">{clientes.length} cliente{clientes.length !== 1 ? 's' : ''} registrado{clientes.length !== 1 ? 's' : ''}</p>
+          <p className="page-sub">Remitentes y destinatarios: datos, direcciones, envíos y cobranza</p>
         </div>
-        <button className="btn btn-primary" onClick={abrirModalCliente}>+ Nuevo cliente</button>
+        <div className="cli-header-actions">
+          {esAdmin && (
+            <button className="btn btn-secondary" onClick={exportar} disabled={exportando} title="Descarga la vista actual en CSV (queda registrado)">
+              {exportando ? 'Exportando…' : '⭳ Exportar CSV'}
+            </button>
+          )}
+          <button className="btn btn-primary" onClick={() => setForm({})}>+ Nuevo cliente</button>
+        </div>
       </div>
 
+      {resumen && (
+        <div className="cli-kpis cli-kpis-top">
+          <button className={`cli-kpi${estado === 'activos' && !tipo && !avisos ? ' active' : ''}`} onClick={() => cambiarFiltros({ estado: 'activos', tipo: '', avisos: '' })}>
+            <span>Activos</span><strong>{resumen.activos}</strong>
+          </button>
+          <button className={`cli-kpi${tipo === 'empresa' ? ' active' : ''}`} onClick={() => cambiarFiltros({ tipo: tipo === 'empresa' ? '' : 'empresa' })}>
+            <span>Empresas</span><strong>{resumen.empresas}</strong>
+          </button>
+          <button className={`cli-kpi${avisos === 'no' ? ' active' : ''}`} onClick={() => cambiarFiltros({ avisos: avisos === 'no' ? '' : 'no' })} title="Clientes que no aceptaron avisos por WhatsApp o correo">
+            <span>Sin avisos</span><strong>{resumen.sinAvisos}</strong>
+          </button>
+          <div className={`cli-kpi${resumen.sinDocumento > 0 ? ' alerta' : ''}`} title="Sin documento no se les puede emitir comprobante con su nombre">
+            <span>Sin documento</span><strong>{resumen.sinDocumento}</strong>
+          </div>
+          <button className={`cli-kpi${estado === 'inactivos' ? ' active' : ''}`} onClick={() => cambiarFiltros({ estado: estado === 'inactivos' ? 'activos' : 'inactivos' })}>
+            <span>Inactivos</span><strong>{resumen.inactivos}</strong>
+          </button>
+        </div>
+      )}
+
+      <div className="cli-toolbar">
+        <input type="search" className="cli-buscar" aria-label="Buscar clientes"
+          placeholder="Buscar por nombre, DNI/RUC, teléfono o correo…"
+          value={busqueda} onChange={(e) => setBusqueda(e.target.value)} />
+        <select aria-label="Estado" value={estado} onChange={(e) => cambiarFiltros({ estado: e.target.value })}>
+          <option value="activos">Activos</option>
+          <option value="inactivos">Inactivos</option>
+          <option value="todos">Todos</option>
+        </select>
+        <select aria-label="Tipo de cliente" value={tipo} onChange={(e) => cambiarFiltros({ tipo: e.target.value })}>
+          <option value="">Personas y empresas</option>
+          <option value="persona">Solo personas</option>
+          <option value="empresa">Solo empresas</option>
+        </select>
+        <select aria-label="Ordenar" value={orden} onChange={(e) => cambiarFiltros({ orden: e.target.value })}>
+          <option value="actividad">Actividad reciente</option>
+          <option value="nombre">Nombre (A–Z)</option>
+          <option value="recientes">Registrados recientemente</option>
+        </select>
+        {hayFiltros && (
+          <button className="btn-xs" onClick={() => { setBusqueda(''); cambiarFiltros({ q: '', estado: '', tipo: '', avisos: '' }) }}>Limpiar filtros</button>
+        )}
+      </div>
+
+      {mensaje && <div className="success-banner">{mensaje}</div>}
       {error && <div className="error-banner">{error}</div>}
 
-      {cargando ? (
+      {cargando && clientes.length === 0 ? (
         <p className="loading-text">Cargando clientes…</p>
       ) : clientes.length === 0 ? (
         <div className="manifest">
           <div className="empty-state">
-            <h3>Todavía no hay clientes</h3>
-            <p>Registra el primero con "Nuevo cliente".</p>
+            <h3>{hayFiltros ? 'Ningún cliente coincide' : 'Todavía no hay clientes'}</h3>
+            <p>{hayFiltros ? 'Prueba con otro término o limpia los filtros.' : 'Registra el primero con "Nuevo cliente".'}</p>
           </div>
         </div>
       ) : (
-        <div className="card-grid">
+        <div className={`manifest cli-tabla${cargando ? ' cargando' : ''}`}>
+          <div className="manifest-row head">
+            <span>Cliente</span>
+            <span>Contacto</span>
+            <span>Envíos</span>
+            <span>Última actividad</span>
+            <span />
+          </div>
           {clientes.map((c) => (
-            <div className="mini-card" key={c.id}>
-              <div className="mini-card-name">{c.nombre}</div>
-              <div className="mini-card-line"><span>DNI</span><span className="cell-mono">{c.dni || '—'}</span></div>
-              <div className="mini-card-line"><span>Teléfono</span><span className="cell-mono">{c.telefono}</span></div>
-
-              {direccionesVistas[c.id] && (
-                <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
-                  {direccionesVistas[c.id].length === 0 ? (
-                    <p className="cell-secondary">Sin direcciones registradas.</p>
-                  ) : (
-                    direccionesVistas[c.id].map((d) => (
-                      <div key={d.id} className="cell-secondary" style={{ marginBottom: 4 }}>
-                        {d.etiqueta ? `${d.etiqueta}: ` : ''}{d.calle}
-                      </div>
-                    ))
-                  )}
-                </div>
-              )}
-
-              <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
-                <button className="btn btn-secondary" style={{ flex: 1, fontSize: 12.5 }} onClick={() => verDirecciones(c)}>
-                  {direccionesVistas[c.id] ? 'Ocultar' : 'Ver'} direcciones
-                </button>
-                <button className="btn btn-secondary" style={{ flex: 1, fontSize: 12.5 }} onClick={() => abrirModalDireccion(c)}>
-                  + Dirección
-                </button>
-              </div>
-              <button className="btn btn-secondary btn-block" style={{ fontSize: 12.5, marginTop: 6 }} onClick={() => abrirHistorial(c)}>
-                Ver historial de pedidos
+            <div key={c.id} className={`manifest-row${c.activo ? '' : ' inactivo'}`}>
+              <button className="cli-nombre" data-label="Cliente" onClick={() => abrirFicha(c.id)}>
+                <span className={`cli-avatar${c.tipoCliente === 'empresa' ? ' empresa' : ''}`} aria-hidden="true">{iniciales(c.nombre)}</span>
+                <span style={{ minWidth: 0 }}>
+                  <span className="cell-primary cli-ellipsis">{c.nombre}</span>
+                  <span className="cell-secondary">
+                    {c.dni ? <>{ETIQUETA_DOC[c.tipoDocumento] || 'Doc.'} <span className="cell-mono">{c.dni}</span></> : 'Sin documento'}
+                  </span>
+                  <span className="cli-chips">
+                    {c.tipoCliente === 'empresa' && <span className="cli-chip empresa">Empresa</span>}
+                    {!c.activo && <span className="cli-chip inactivo">Inactivo</span>}
+                    {!c.recibeAvisos && <span className="cli-chip" title="No aceptó avisos">Sin avisos</span>}
+                  </span>
+                </span>
               </button>
+              <span data-label="Contacto" style={{ minWidth: 0 }}>
+                <a className="cell-mono" href={enlaceWhatsApp(c.telefono)} target="_blank" rel="noreferrer" title="Escribir por WhatsApp">{c.telefono}</a>
+                {c.email && <span className="cell-secondary cli-ellipsis">{c.email}</span>}
+              </span>
+              <span data-label="Envíos">
+                <strong>{c.totalEnvios}</strong>
+                {c.enviosEnCurso > 0 && <span className="cli-chip curso" style={{ marginLeft: 6 }}>{c.enviosEnCurso} en curso</span>}
+              </span>
+              <span data-label="Última actividad" className="cell-secondary">
+                {c.ultimaActividad ? <span title={fechaCorta(c.ultimaActividad, true)}>{haceCuanto(c.ultimaActividad)}</span> : 'Sin envíos'}
+              </span>
+              <span className="row-actions">
+                <button className="btn-xs" onClick={() => abrirFicha(c.id)}>Ver ficha</button>
+                <button className="btn-xs" onClick={() => setForm({ cliente: c })}>Editar</button>
+              </span>
             </div>
           ))}
         </div>
       )}
 
-      {mostrarModalCliente && (
-        <Modal title="Nuevo cliente" onClose={() => setMostrarModalCliente(false)}>
-          {errorCliente && <div className="error-banner">{errorCliente}</div>}
-          <form onSubmit={manejarEnvioCliente}>
-            <div className="field">
-              <label htmlFor="nombre">Nombre completo</label>
-              <input id="nombre" required value={formCliente.nombre}
-                onChange={(e) => setFormCliente((f) => ({ ...f, nombre: e.target.value }))} />
-            </div>
-            <div className="field">
-              <label htmlFor="dni">DNI</label>
-              <input id="dni" value={formCliente.dni}
-                onChange={(e) => setFormCliente((f) => ({ ...f, dni: e.target.value }))} />
-            </div>
-            <div className="field">
-              <label htmlFor="telefono">Teléfono</label>
-              <input id="telefono" required value={formCliente.telefono}
-                onChange={(e) => setFormCliente((f) => ({ ...f, telefono: e.target.value }))} />
-            </div>
-            <div className="field">
-              <label htmlFor="clienteEmail">Correo (opcional)</label>
-              <input id="clienteEmail" type="email" value={formCliente.email}
-                onChange={(e) => setFormCliente((f) => ({ ...f, email: e.target.value }))} />
-            </div>
-            <div className="modal-actions">
-              <button type="button" className="btn btn-secondary" onClick={() => setMostrarModalCliente(false)}>Cancelar</button>
-              <button type="submit" className="btn btn-primary" disabled={enviandoCliente}>
-                {enviandoCliente ? 'Guardando…' : 'Registrar cliente'}
-              </button>
-            </div>
-          </form>
-        </Modal>
+      {clientes.length > 0 && (
+        <div className="cli-paginacion">
+          <span className="cell-secondary">
+            {(pagina - 1) * POR_PAGINA + 1}–{(pagina - 1) * POR_PAGINA + clientes.length} de {paginacion.totalRegistros}
+          </span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-secondary" disabled={pagina <= 1} onClick={() => cambiarFiltros({ pagina: pagina - 1 }, false)}>← Anterior</button>
+            <button className="btn btn-secondary" disabled={pagina >= (paginacion.totalPaginas || 1)} onClick={() => cambiarFiltros({ pagina: pagina + 1 }, false)}>Siguiente →</button>
+          </div>
+        </div>
       )}
 
-      {clienteDireccion && (
-        <Modal title={`Nueva dirección — ${clienteDireccion.nombre}`} onClose={() => setClienteDireccion(null)}>
-          <form onSubmit={manejarEnvioDireccion}>
-            <div className="field">
-              <label htmlFor="etiqueta">Etiqueta</label>
-              <input id="etiqueta" placeholder="Ej. Casa, Trabajo" value={formDireccion.etiqueta}
-                onChange={(e) => setFormDireccion((f) => ({ ...f, etiqueta: e.target.value }))} />
-            </div>
-            <div className="field">
-              <label htmlFor="calle">Calle / dirección</label>
-              <input id="calle" required value={formDireccion.calle}
-                onChange={(e) => setFormDireccion((f) => ({ ...f, calle: e.target.value }))} />
-            </div>
-            <div className="field">
-              <label htmlFor="referencia">Referencia</label>
-              <input id="referencia" value={formDireccion.referencia}
-                onChange={(e) => setFormDireccion((f) => ({ ...f, referencia: e.target.value }))} />
-            </div>
-            <div className="field">
-              <label htmlFor="zona">Zona</label>
-              <select id="zona" value={formDireccion.zonaId}
-                onChange={(e) => setFormDireccion((f) => ({ ...f, zonaId: e.target.value }))}>
-                <option value="">Sin especificar</option>
-                {zonas.map((z) => <option key={z.id} value={z.id}>{z.nombre}</option>)}
-              </select>
-            </div>
-            <div className="modal-actions">
-              <button type="button" className="btn btn-secondary" onClick={() => setClienteDireccion(null)}>Cancelar</button>
-              <button type="submit" className="btn btn-primary" disabled={enviandoDireccion}>
-                {enviandoDireccion ? 'Guardando…' : 'Agregar dirección'}
-              </button>
-            </div>
-          </form>
-        </Modal>
+      {fichaId && (
+        <FichaCliente
+          clienteId={fichaId}
+          zonas={zonas}
+          pausado={Boolean(form)}
+          version={versionFicha}
+          onClose={() => cambiarFiltros({ ficha: '' }, false)}
+          onEditar={(c) => setForm({ cliente: c })}
+          onCambio={cargar}
+        />
       )}
 
-      {clienteHistorial && (
-        <Modal title={`Historial — ${clienteHistorial.nombre}`} onClose={() => setClienteHistorial(null)}>
-          {cargandoHistorial ? (
-            <p className="loading-text">Cargando historial…</p>
-          ) : pedidosHistorial.length === 0 ? (
-            <p className="cell-secondary">Este cliente todavía no tiene pedidos registrados.</p>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {pedidosHistorial.map((p) => (
-                <div key={p.id} style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 12 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                    <span className="tag-id">#{String(p.id).padStart(5, '0')}</span>
-                    <EstadoBadge estado={nombreEstado(p.estadoId)} />
-                  </div>
-                  <div className="cell-primary" style={{ marginBottom: 2 }}>{p.descripcionProducto || 'Sin descripción'}</div>
-                  <div className="cell-secondary">
-                    S/ {Number(p.monto).toFixed(2)} · {new Date(p.fechaCreacion).toLocaleDateString('es-PE')}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </Modal>
+      {form && (
+        <ClienteForm
+          cliente={form.cliente}
+          onClose={() => setForm(null)}
+          onGuardado={(c, texto) => {
+            setForm(null)
+            avisar(texto)
+            cargar()
+            if (fichaId === c.id) setVersionFicha((v) => v + 1)
+            else if (!form.cliente) abrirFicha(c.id) // recien creado: se abre su ficha para agregar direccion
+          }}
+        />
       )}
     </div>
   )

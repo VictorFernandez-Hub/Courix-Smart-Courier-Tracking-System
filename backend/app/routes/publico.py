@@ -76,5 +76,6 @@ def rastrearPorCodigoGuia(codigoGuia):
     return {
         'codigoGuia': pedido.codigoGuia,
         'estadoActual': nombres.get(pedido.estadoId),
+        'fechaEntregaEstimada': pedido.fechaEntregaEstimada.date().isoformat() if pedido.fechaEntregaEstimada else None,
         'historial': eventos,
     }, 200

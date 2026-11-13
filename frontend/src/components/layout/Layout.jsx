@@ -64,6 +64,12 @@ export default function Layout() {
               <NavLink to="/pedidos" className={({ isActive }) => `sidebar-link${isActive ? ' active' : ''}`}>
                 Pedidos
               </NavLink>
+              <NavLink to="/recojos" className={({ isActive }) => `sidebar-link${isActive ? ' active' : ''}`}>
+                Recojos
+              </NavLink>
+              <NavLink to="/despachos" className={({ isActive }) => `sidebar-link${isActive ? ' active' : ''}`}>
+                Despachos
+              </NavLink>
               <NavLink to="/clientes" className={({ isActive }) => `sidebar-link${isActive ? ' active' : ''}`}>
                 Clientes
               </NavLink>

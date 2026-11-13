@@ -151,6 +151,22 @@ def email(data, campo='email', requerido=True):
     return valor
 
 
+PATRON_USUARIO = re.compile(r'^[a-z0-9](?:[a-z0-9._-]{1,28})[a-z0-9]$')
+
+
+def nombreUsuario(data, campo='usuario', requerido=True):
+    """3 a 30 caracteres: letras, numeros, punto, guion y guion bajo.
+    Se guarda en minusculas para que 'JPerez' y 'jperez' sean el mismo."""
+    valor = texto(data, campo, requerido=requerido, maximo=30)
+    if valor is None:
+        return None
+    valor = valor.lower()
+    if not PATRON_USUARIO.match(valor):
+        raise ErrorValidacion('El usuario debe tener de 3 a 30 caracteres: letras, números, punto, '
+                              'guion o guion bajo (sin espacios ni tildes), y empezar y terminar en letra o número')
+    return valor
+
+
 def telefono(data, campo='telefono', requerido=False):
     valor = texto(data, campo, requerido=requerido, maximo=20)
     if valor is None:
@@ -168,6 +184,54 @@ def dni(data, campo='dni'):
     if not re.fullmatch(r'[A-Za-z0-9]{6,15}', valor):
         raise ErrorValidacion('El DNI/documento solo puede tener letras y numeros (6 a 15 caracteres)')
     return valor.upper()
+
+
+TIPOS_DOCUMENTO = ('DNI', 'RUC', 'CE', 'PASAPORTE')
+PREFIJOS_RUC = ('10', '15', '16', '17', '20')
+_PESOS_RUC = (5, 4, 3, 2, 7, 6, 5, 4, 3, 2)
+
+
+def rucValido(numero):
+    """RUC peruano: 11 digitos, prefijo valido y digito verificador modulo 11."""
+    if not re.fullmatch(r'\d{11}', numero or '') or numero[:2] not in PREFIJOS_RUC:
+        return False
+    suma = sum(int(d) * p for d, p in zip(numero[:10], _PESOS_RUC))
+    verificador = 11 - suma % 11
+    verificador = verificador - 10 if verificador >= 10 else verificador
+    return verificador == int(numero[10])
+
+
+def documentoIdentidad(data, campoTipo='tipoDocumento', campoNumero='dni'):
+    """Devuelve (tipo, numero). Si no se indica el tipo se deduce por la forma
+    del numero (8 digitos = DNI, 11 = RUC); un numero que no encaja en
+    ninguno se acepta con la regla antigua y sin tipo (compatibilidad)."""
+    tipo = opcion(data, campoTipo, TIPOS_DOCUMENTO)
+    if isinstance(data.get(campoNumero), str):
+        data = {**data, campoNumero: re.sub(r'[\s.-]', '', data[campoNumero])}
+    numero = texto(data, campoNumero, maximo=15)
+    if numero is None:
+        if tipo:
+            raise ErrorValidacion(f'Indica el numero de {tipo}')
+        return None, None
+    numero = numero.upper()
+    if tipo is None:
+        if re.fullmatch(r'\d{8}', numero):
+            tipo = 'DNI'
+        elif re.fullmatch(r'\d{11}', numero):
+            tipo = 'RUC'
+        else:
+            return None, dni({campoNumero: numero}, campoNumero)
+
+    if tipo == 'DNI' and not re.fullmatch(r'\d{8}', numero):
+        raise ErrorValidacion('El DNI debe tener exactamente 8 digitos')
+    if tipo == 'RUC' and not rucValido(numero):
+        raise ErrorValidacion('El RUC no es valido: deben ser 11 digitos que empiecen en 10, 15, 16, 17 o 20 '
+                              'y su digito verificador debe coincidir')
+    if tipo == 'CE' and not re.fullmatch(r'[A-Z0-9]{8,12}', numero):
+        raise ErrorValidacion('El carne de extranjeria debe tener de 8 a 12 letras o numeros')
+    if tipo == 'PASAPORTE' and not re.fullmatch(r'[A-Z0-9]{6,12}', numero):
+        raise ErrorValidacion('El pasaporte debe tener de 6 a 12 letras o numeros')
+    return tipo, numero
 
 
 def validarPassword(password):

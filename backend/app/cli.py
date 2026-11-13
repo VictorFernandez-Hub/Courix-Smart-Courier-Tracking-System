@@ -9,7 +9,7 @@ from app.models import (
     UsuarioModel, EstadoPedidoModel,
 )
 from app.core.validacion import (
-    ErrorValidacion, validarPassword,
+    ErrorValidacion, validarPassword, nombreUsuario,
 )
 from app.reglas import (
     ESTADOS_CATALOGO,
@@ -36,12 +36,19 @@ def comandoSembrar():
 
 @click.command('crear-admin')
 @with_appcontext
-@click.option('--email', 'correo', prompt='Email del administrador')
+@click.option('--usuario', 'login', prompt='Usuario (para iniciar sesion)')
+@click.option('--email', 'correo', prompt='Email del administrador (para recuperar la contrasena)')
 @click.option('--nombre', prompt='Nombre')
-def comandoCrearAdmin(correo, nombre):
+def comandoCrearAdmin(login, correo, nombre):
     """Crea un administrador. La contrasena se pide por consola (no queda en
     el historial de la terminal ni en ningun archivo)."""
+    try:
+        login = nombreUsuario({'usuario': login})
+    except ErrorValidacion as error:
+        raise click.ClickException(error.mensaje)
     correo = correo.strip().lower()
+    if conexion.session.query(UsuarioModel).filter_by(nombreUsuario=login).first():
+        raise click.ClickException(f'Ya existe el usuario {login}')
     if conexion.session.query(UsuarioModel).filter_by(email=correo).first():
         raise click.ClickException(f'Ya existe un usuario con el email {correo}')
     password = click.prompt('Contrasena', hide_input=True, confirmation_prompt=True)
@@ -50,7 +57,19 @@ def comandoCrearAdmin(correo, nombre):
     except ErrorValidacion as error:
         raise click.ClickException(error.mensaje)
     conexion.session.add(UsuarioModel(
-        nombre=nombre.strip(), email=correo, passwordHash=generate_password_hash(password), rol='admin'
+        nombre=nombre.strip(), nombreUsuario=login, email=correo, passwordHash=generate_password_hash(password), rol='admin'
     ))
     conexion.session.commit()
-    click.echo(f'Administrador {correo} creado')
+    click.echo(f'Administrador "{login}" creado. Inicia sesion con ese usuario.')
+
+
+@click.command('reenviar-avisos')
+@with_appcontext
+def comandoReenviarAvisos():
+    """Reintenta los avisos pendientes o fallidos (programalo con cron)."""
+    from app.models import NotificacionModel
+    from app.notificaciones import MAX_INTENTOS_AVISO, procesarAvisos
+    ids = [n.id for n in conexion.session.query(NotificacionModel.id).filter(
+        NotificacionModel.estado.in_(('pendiente', 'fallido')),
+        NotificacionModel.intentos < MAX_INTENTOS_AVISO).limit(500).all()]
+    click.echo(f'Avisos procesados: {procesarAvisos(ids)}')

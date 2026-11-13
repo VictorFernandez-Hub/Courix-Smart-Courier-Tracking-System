@@ -12,6 +12,12 @@ class IncidenciaModel(conexion.Model):
     # estado: abierta | en_proceso | resuelta
     estado = Column(type_=types.String(20), server_default='abierta')
     resolucion = Column(type_=types.Text, nullable=True)
+    # ---- Gestion: quien la atiende, que tan urgente es y hasta cuando ----
+    responsableId = Column(ForeignKey(column='usuarios.id'), name='responsable_id', type_=types.Integer, nullable=True)
+    prioridad = Column(type_=types.String(10), nullable=False, server_default='media', default='media')
+    fechaLimite = Column(name='fecha_limite', type_=types.DateTime, nullable=True)
+    # Monto reconocido al cliente al resolver (reembolso/indemnizacion)
+    compensacion = Column(type_=types.Numeric(10, 2), nullable=True)
     fechaCreacion = Column(name='fecha_creacion', type_=types.DateTime, server_default=conexion.func.now())
     fechaResolucion = Column(name='fecha_resolucion', type_=types.DateTime, nullable=True)
 

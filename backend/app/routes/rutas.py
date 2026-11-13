@@ -1,8 +1,10 @@
 """Rutas de reparto."""
 
-from flask import Blueprint, request
+from flask import Blueprint, current_app, request
 
 from app.extensions import conexion
+from app.finanzas import generarCargoDevolucion
+from app.core.seguridad import usuarioActualId
 from app.models import (
     RepartidorModel, RutaModel, PedidoModel, LiquidacionRutaModel,
 )
@@ -19,7 +21,8 @@ from app.schemas import (
     RutaDto,
 )
 from app.servicios import (
-    asignarPedidoARuta, construirDetalleRuta, crearRutaPara, efectivoEsperadoDeRuta, esDuenioDeLaRuta, exigirMiRepartidor, idEstado, idsEstados, miRepartidor, obtener, registrarHistorial, rutaActivaDe, validarRepartidorOperativo,
+    agenciaDelUsuario, asignarPedidoARuta, construirDetalleRuta, devolverAAgencia, exigirAccesoRuta, filtrarRutasPorAgencia, crearRutaPara, efectivoEsperadoDeRuta, esDuenioDeLaRuta, exigirMiRepartidor, idEstado, idsEstados, miRepartidor, obtener, registrarHistorial, rutaActivaDe, validarRepartidorOperativo,
+    estadoListoParaReparto,
 )
 
 
@@ -85,11 +88,12 @@ def quitarPedidoDeRuta(id, pedidoId):
         return {'message': 'Este pedido ya fue recogido/esta en camino, ya no se puede quitar de la ruta '
                            '(si hay un problema, usa cancelar o reporta una incidencia)'}, 409
 
-    estadoEnAlmacen = idEstado('en_almacen')
+    # Vuelve a la agencia desde donde se reparte (origen o destino)
+    estadoPool = idEstado(estadoListoParaReparto(pedido))
     pedido.rutaId = None
     pedido.repartidorId = None
-    pedido.estadoId = estadoEnAlmacen
-    registrarHistorial(pedido.id, estadoEnAlmacen, comentario=f'Removido de la ruta {ruta.codigo}, vuelve al pool')
+    pedido.estadoId = estadoPool
+    registrarHistorial(pedido.id, estadoPool, comentario=f'Removido de la ruta {ruta.codigo}, vuelve al pool')
     conexion.session.commit()
     return {'message': 'Pedido removido de la ruta, disponible de nuevo en el pool'}, 200
 
@@ -101,6 +105,7 @@ def listarRutas():
     if rolActual() == 'repartidor':
         query = query.filter_by(repartidorId=exigirMiRepartidor().id)
     else:
+        query = filtrarRutasPorAgencia(query, agenciaDelUsuario())
         repartidorId = request.args.get('repartidor_id', type=int)
         if repartidorId:
             query = query.filter_by(repartidorId=repartidorId)
@@ -117,6 +122,8 @@ def detalleRuta(id):
     ruta = obtener(RutaModel, id, 'Ruta no existe')
     if not (esStaff() or esDuenioDeLaRuta(ruta)):
         return {'message': 'No puedes ver la ruta de otro repartidor'}, 403
+    if esStaff():
+        exigirAccesoRuta(ruta)
     return {'content': construirDetalleRuta(ruta)}, 200
 
 
@@ -164,7 +171,21 @@ def completarRuta(id):
     ).count()
     if pendientes > 0:
         return {'message': f'Todavia hay {pendientes} pedido(s) sin resolver en esta ruta '
-                           '(entregalos, devuelvelos al almacen, o quitalos de la ruta antes de completarla)'}, 409
+                           '(entregalos, marca el intento fallido, o quitalos de la ruta antes de completarla)'}, 409
+
+    # Los no entregados vuelven fisicamente a la agencia con el repartidor:
+    # quedan listos para reintentar otro dia, o para devolver al remitente.
+    noEntregados = conexion.session.query(PedidoModel).filter(
+        PedidoModel.rutaId == id, PedidoModel.estadoId == idEstado('no_entregado')).with_for_update().all()
+    maximo = current_app.config['MAX_INTENTOS_ENTREGA']
+    destinos = []
+    for p in noEntregados:
+        destino = devolverAAgencia(p, ruta, maximo)
+        if destino == 'por_devolver':
+            generarCargoDevolucion(p, usuarioActualId())
+        destinos.append(destino)
+    porDevolver = destinos.count('por_devolver')
+    paraReintentar = len(destinos) - porDevolver
 
     ruta.estado = 'completada'
     esperado = efectivoEsperadoDeRuta(id)
@@ -175,7 +196,16 @@ def completarRuta(id):
             observacion='Sin cobros en efectivo', recibidoPorId=None,
         ))
     conexion.session.commit()
+    mensaje = 'Ruta completada'
+    if destinos:
+        mensaje += f'. Entrega {len(destinos)} paquete(s) no entregado(s) en la agencia'
+        if porDevolver:
+            mensaje += f' ({porDevolver} para devolver al remitente)'
+    if esperado > 0:
+        mensaje += f'. Debes liquidar S/ {esperado} en caja'
     return {
-        'message': 'Ruta completada' + (f'. Debes liquidar S/ {esperado} en caja' if esperado > 0 else ''),
+        'message': mensaje,
         'efectivoPorLiquidar': str(esperado),
+        'paraReintentar': paraReintentar,
+        'porDevolver': porDevolver,
     }, 200

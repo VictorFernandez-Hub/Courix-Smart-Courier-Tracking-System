@@ -6,7 +6,7 @@ class TarifaZonaModel(conexion.Model):
     """Precio de referencia para un envio entre dos zonas (puede ser la misma
     zona en origen y destino, para reparto local). Se usa para sugerir el
     monto de un pedido cuando no se especifica uno manualmente:
-        monto = precioBase + pesoKg * precioPorKg
+        monto = max(precioMinimo, precioBase + kg facturables * precioPorKg) + seguro
     No reemplaza la posibilidad de escribir un monto a mano (convenios
     especiales, descuentos, etc.), solo evita que el operador tenga que
     inventarse un precio cada vez."""
@@ -15,6 +15,14 @@ class TarifaZonaModel(conexion.Model):
     zonaDestinoId = Column(ForeignKey(column='zonas.id'), name='zona_destino_id', type_=types.Integer, nullable=False)
     precioBase = Column(name='precio_base', type_=types.Numeric(10, 2), nullable=False, server_default='0.00')
     precioPorKg = Column(name='precio_por_kg', type_=types.Numeric(10, 2), nullable=False, server_default='0.00')
+    # estandar | express: cada servicio tiene su propio precio entre las mismas zonas
+    tipoServicio = Column(name='tipo_servicio', type_=types.String(20), nullable=False,
+                          server_default='estandar', default='estandar')
+    # Lo minimo que se cobra por el flete aunque el paquete pese muy poco
+    precioMinimo = Column(name='precio_minimo', type_=types.Numeric(10, 2), nullable=False,
+                          server_default='0.00', default=0)
+    # Plazo comprometido (SLA): con esto se calcula la fecha estimada de entrega
+    diasEntrega = Column(name='dias_entrega', type_=types.Integer, nullable=True)
     activo = Column(type_=types.Boolean, server_default='1')
     fechaCreacion = Column(name='fecha_creacion', type_=types.DateTime, server_default=conexion.func.now())
     fechaActualizacion = Column(name='fecha_actualizacion', type_=types.DateTime,

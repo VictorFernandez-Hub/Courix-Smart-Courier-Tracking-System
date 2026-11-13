@@ -3,51 +3,51 @@ from conftest import Api, PASSWORD, iniciarSesion
 
 
 def test_no_se_puede_crear_usuario_sin_token(client):
-    r = client.post('/usuario', json={'nombre': 'X', 'email': 'x@test.pe', 'password': PASSWORD, 'rol': 'admin'})
+    r = client.post('/usuario', json={'nombre': 'X', 'usuario': 'x', 'email': 'x@test.pe', 'password': PASSWORD, 'rol': 'admin'})
     assert r.status_code == 401
 
 
 def test_politica_de_password(admin):
-    r = admin.post('/usuario', {'nombre': 'Op', 'email': 'op@test.pe', 'password': 'corta', 'rol': 'operador'})
+    r = admin.post('/usuario', {'nombre': 'Op', 'usuario': 'opera', 'email': 'opera@test.pe', 'password': 'corta', 'rol': 'operador'})
     assert r.status_code == 400
     assert 'al menos 10' in r.get_json()['message']
 
 
 def test_login_bloquea_tras_intentos_fallidos(client):
     for _ in range(5):
-        assert client.post('/login', json={'email': 'admin@test.pe', 'password': 'mala-clave-1'}).status_code == 401
-    r = client.post('/login', json={'email': 'admin@test.pe', 'password': PASSWORD})
+        assert client.post('/login', json={'usuario': 'admin', 'password': 'mala-clave-1'}).status_code == 401
+    r = client.post('/login', json={'usuario': 'admin', 'password': PASSWORD})
     assert r.status_code == 429
 
 
 def test_login_no_revela_si_el_email_existe(client):
-    r1 = client.post('/login', json={'email': 'noexiste@test.pe', 'password': 'x'})
-    r2 = client.post('/login', json={'email': 'admin@test.pe', 'password': 'x'})
+    r1 = client.post('/login', json={'usuario': 'noexiste', 'password': 'x'})
+    r2 = client.post('/login', json={'usuario': 'admin', 'password': 'x'})
     assert r1.status_code == r2.status_code == 401
     assert r1.get_json()['message'] == r2.get_json()['message']
 
 
 def test_desactivar_usuario_revoca_su_token_al_instante(client, admin):
-    admin.post('/usuario', {'nombre': 'Op', 'email': 'op@test.pe', 'password': PASSWORD, 'rol': 'operador'})
-    operador = iniciarSesion(client, 'op@test.pe')
+    admin.post('/usuario', {'nombre': 'Op', 'usuario': 'opera', 'email': 'opera@test.pe', 'dni': '40000001', 'celular': '987654321', 'password': PASSWORD, 'rol': 'operador'})
+    operador = iniciarSesion(client, 'opera@test.pe')
     assert operador.get('/clientes').status_code == 200
 
-    idOp = [u for u in admin.get('/usuarios').get_json()['content'] if u['email'] == 'op@test.pe'][0]['id']
+    idOp = [u for u in admin.get('/usuarios').get_json()['content'] if u['email'] == 'opera@test.pe'][0]['id']
     admin.post(f'/usuario/{idOp}/desactivar')
     assert operador.get('/clientes').status_code == 401
 
 
 def test_cambio_de_rol_aplica_de_inmediato(client, admin):
-    admin.post('/usuario', {'nombre': 'Op', 'email': 'op@test.pe', 'password': PASSWORD, 'rol': 'admin'})
-    otro = iniciarSesion(client, 'op@test.pe')
-    idOtro = [u for u in admin.get('/usuarios').get_json()['content'] if u['email'] == 'op@test.pe'][0]['id']
+    admin.post('/usuario', {'nombre': 'Op', 'usuario': 'opera', 'email': 'opera@test.pe', 'dni': '40000001', 'celular': '987654321', 'password': PASSWORD, 'rol': 'admin'})
+    otro = iniciarSesion(client, 'opera@test.pe')
+    idOtro = [u for u in admin.get('/usuarios').get_json()['content'] if u['email'] == 'opera@test.pe'][0]['id']
     admin.put(f'/usuario/{idOtro}', {'rol': 'operador'})
     # el token viejo (con rol admin) deja de servir
     assert otro.post('/zona', {'nombre': 'Hack'}).status_code == 401
 
 
 def test_refresh_token(client):
-    r = client.post('/login', json={'email': 'admin@test.pe', 'password': PASSWORD}).get_json()
+    r = client.post('/login', json={'usuario': 'admin', 'password': PASSWORD}).get_json()
     nuevo = client.post('/token/refresh', headers={'Authorization': f'Bearer {r["refreshToken"]}'})
     assert nuevo.status_code == 200
     assert Api(client, nuevo.get_json()['accessToken']).get('/usuarios').status_code == 200

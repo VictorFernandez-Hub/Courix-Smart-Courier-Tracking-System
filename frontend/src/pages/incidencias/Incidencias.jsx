@@ -1,14 +1,18 @@
 import { useEffect, useState } from 'react'
 import Modal from '../../components/ui/Modal'
-import { listarIncidencias, marcarIncidenciaEnProceso, resolverIncidencia } from '../../api'
+import { asignarIncidencia, getUsuario, listarIncidencias, listarUsuarios, marcarIncidenciaEnProceso, resolverIncidencia } from '../../api'
 
 const TIPO_LABEL = {
   reclamo: 'Reclamo',
   producto_danado: 'Producto dañado',
   direccion_incorrecta: 'Dirección incorrecta',
   retraso: 'Retraso',
+  faltante: 'Bulto faltante',
   otro: 'Otro',
 }
+
+const PRIORIDAD_COLOR = { alta: 'var(--danger)', media: 'var(--st-en_almacen)', baja: 'var(--ink-faint)' }
+const fechaHora = (v) => (v ? new Date(v).toLocaleString('es-PE', { dateStyle: 'short', timeStyle: 'short' }) : '')
 
 const ESTADO_COLOR = {
   abierta: 'var(--st-no_entregado)',
@@ -19,6 +23,9 @@ const ESTADO_COLOR = {
 export default function Incidencias() {
   const [incidencias, setIncidencias] = useState([])
   const [filtro, setFiltro] = useState('')
+  const usuario = getUsuario()
+  const esAdmin = usuario?.rol === 'admin'
+  const [personal, setPersonal] = useState([])
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState('')
   const [mensaje, setMensaje] = useState('')
@@ -31,10 +38,14 @@ export default function Incidencias() {
     cargar()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtro])
+  useEffect(() => {
+    if (esAdmin) listarUsuarios().then((r) => setPersonal(r.content.filter((u) => u.activo && u.rol !== 'repartidor'))).catch(() => {})
+  }, [esAdmin])
 
   function cargar() {
     setCargando(true)
-    listarIncidencias(filtro || undefined)
+    const especial = { mias: filtro === 'mias', vencidas: filtro === 'vencidas' }
+    listarIncidencias(['mias', 'vencidas'].includes(filtro) ? 'abierta,en_proceso' : (filtro || undefined), especial)
       .then((r) => setIncidencias(r.content))
       .catch((err) => setError(err.message))
       .finally(() => setCargando(false))
@@ -50,6 +61,17 @@ export default function Incidencias() {
     try {
       await marcarIncidenciaEnProceso(id)
       mostrarMensaje(`Incidencia #${id} marcada en proceso`)
+      cargar()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  async function asignar(inc, responsableId) {
+    setError('')
+    try {
+      const r = await asignarIncidencia(inc.id, { responsableId: Number(responsableId) })
+      mostrarMensaje(r.message)
       cargar()
     } catch (err) {
       setError(err.message)
@@ -90,6 +112,8 @@ export default function Incidencias() {
         <button className={`filter-pill${filtro === 'abierta' ? ' active' : ''}`} onClick={() => setFiltro('abierta')}>Abiertas</button>
         <button className={`filter-pill${filtro === 'en_proceso' ? ' active' : ''}`} onClick={() => setFiltro('en_proceso')}>En proceso</button>
         <button className={`filter-pill${filtro === 'resuelta' ? ' active' : ''}`} onClick={() => setFiltro('resuelta')}>Resueltas</button>
+        <button className={`filter-pill${filtro === 'mias' ? ' active' : ''}`} onClick={() => setFiltro('mias')}>Asignadas a mí</button>
+        <button className={`filter-pill${filtro === 'vencidas' ? ' active' : ''}`} onClick={() => setFiltro('vencidas')}>Fuera de plazo</button>
       </div>
 
       {mensaje && <div className="success-banner">{mensaje}</div>}
@@ -112,6 +136,16 @@ export default function Incidencias() {
                 <div>
                   <div className="mini-card-name">Pedido #{String(inc.pedidoId).padStart(5, '0')} — {TIPO_LABEL[inc.tipo] || inc.tipo}</div>
                   <div className="cell-secondary" style={{ marginTop: 4 }}>{inc.descripcion}</div>
+                  <div className="cell-secondary" style={{ marginTop: 6, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                    <span style={{ color: PRIORIDAD_COLOR[inc.prioridad], fontWeight: 600 }}>Prioridad {inc.prioridad}</span>
+                    <span>Responsable: {inc.responsable || 'sin asignar'}</span>
+                    {inc.fechaLimite && inc.estado !== 'resuelta' && (
+                      <span style={{ color: inc.vencida ? 'var(--danger)' : undefined, fontWeight: inc.vencida ? 600 : undefined }}>
+                        {inc.vencida ? '⚠ Venció' : 'Vence'} {fechaHora(inc.fechaLimite)}
+                      </span>
+                    )}
+                    {inc.compensacion && Number(inc.compensacion) > 0 && <span>Compensado: S/ {Number(inc.compensacion).toFixed(2)}</span>}
+                  </div>
                   {inc.resolucion && (
                     <div className="cell-secondary" style={{ marginTop: 6, fontStyle: 'italic' }}>
                       Resolución: {inc.resolucion}
@@ -124,8 +158,15 @@ export default function Incidencias() {
               </div>
               {inc.estado !== 'resuelta' && (
                 <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
-                  {inc.estado === 'abierta' && (
-                    <button className="btn-xs" onClick={() => manejarEnProceso(inc.id)}>Marcar en proceso</button>
+                  {inc.estado === 'abierta' && !inc.responsableId && (
+                    <button className="btn-xs" onClick={() => manejarEnProceso(inc.id)}>Tomarla</button>
+                  )}
+                  {esAdmin && (
+                    <select className="btn-xs" aria-label="Asignar responsable" value={inc.responsableId || ''}
+                      onChange={(e) => e.target.value && asignar(inc, e.target.value)}>
+                      <option value="">Asignar a…</option>
+                      {personal.map((u) => <option key={u.id} value={u.id}>{u.nombre}</option>)}
+                    </select>
                   )}
                   <button className="btn-xs" style={{ color: 'var(--st-entregado)', borderColor: 'var(--st-entregado)' }} onClick={() => abrirResolver(inc)}>
                     Resolver

@@ -1,25 +1,25 @@
-"""Zonas, tarifas, almacenes y catalogo de estados."""
+"""Zonas, tarifas y catalogo de estados (las agencias estan en almacenes.py)."""
 
 from flask import Blueprint, request
 
 from app.extensions import conexion
 from app.models import (
-    ZonaModel, AlmacenModel, EstadoPedidoModel, TarifaZonaModel, PedidoModel,
+    ZonaModel, AlmacenModel, EstadoPedidoModel, TarifaZonaModel,
 )
 from app.core.seguridad import (
     requiereRol, requiereLogin, auditar, ROLES_STAFF,
 )
 from app.core.validacion import (
-    ErrorNegocio, cuerpoJson, texto, entero, dinero, coordenada, telefono,
+    ErrorNegocio, cuerpoJson, texto, entero, dinero, opcion,
 )
 from app.reglas import (
-    ESTADOS_ACTIVOS,
+    TIPOS_SERVICIO,
 )
 from app.schemas import (
-    AlmacenDto, EstadoPedidoDto, TarifaZonaDto, ZonaDto,
+    EstadoPedidoDto, TarifaZonaDto, ZonaDto,
 )
 from app.servicios import (
-    buscarTarifa, exigirZonaActiva, idsEstados, obtener,
+    buscarTarifa, exigirZonaActiva, obtener,
 )
 
 
@@ -98,18 +98,23 @@ def crearTarifa():
     data = cuerpoJson()
     origen = entero(data, 'zonaOrigenId', requerido=True)
     destino = entero(data, 'zonaDestinoId', requerido=True)
+    servicio = opcion(data, 'tipoServicio', TIPOS_SERVICIO, defecto='estandar')
     precioBase = dinero(data, 'precioBase', requerido=True)
     precioPorKg = dinero(data, 'precioPorKg', requerido=True)
+    precioMinimo = dinero(data, 'precioMinimo') or 0
+    dias = entero(data, 'diasEntrega', minimo=0, maximo=60)
     exigirZonaActiva(origen)
     exigirZonaActiva(destino)
 
-    if buscarTarifa(origen, destino):
-        return {'message': 'Ya existe una tarifa activa para ese par de zonas, edita esa en vez de crear otra'}, 409
+    if buscarTarifa(origen, destino, servicio):
+        return {'message': f'Ya existe una tarifa {servicio} activa para ese par de zonas, edita esa en vez de crear otra'}, 409
 
-    nueva = TarifaZonaModel(zonaOrigenId=origen, zonaDestinoId=destino, precioBase=precioBase, precioPorKg=precioPorKg)
+    nueva = TarifaZonaModel(zonaOrigenId=origen, zonaDestinoId=destino, tipoServicio=servicio, precioBase=precioBase,
+                            precioPorKg=precioPorKg, precioMinimo=precioMinimo, diasEntrega=dias)
     conexion.session.add(nueva)
     conexion.session.flush()
-    auditar('tarifa_creada', 'tarifa', nueva.id, {'precioBase': precioBase, 'precioPorKg': precioPorKg})
+    auditar('tarifa_creada', 'tarifa', nueva.id, {'servicio': servicio, 'precioBase': precioBase,
+                                                  'precioPorKg': precioPorKg, 'precioMinimo': precioMinimo})
     conexion.session.commit()
     return {'content': TarifaZonaDto().dump(nueva)}, 201
 
@@ -119,13 +124,17 @@ def crearTarifa():
 def editarTarifa(id):
     data = cuerpoJson()
     tarifa = obtener(TarifaZonaModel, id, 'Tarifa no existe')
-    antes = {'precioBase': tarifa.precioBase, 'precioPorKg': tarifa.precioPorKg}
+    campos = ('precioBase', 'precioPorKg', 'precioMinimo', 'diasEntrega')
+    antes = {c: getattr(tarifa, c) for c in campos}
     if 'precioBase' in data:
         tarifa.precioBase = dinero(data, 'precioBase', requerido=True)
     if 'precioPorKg' in data:
         tarifa.precioPorKg = dinero(data, 'precioPorKg', requerido=True)
-    auditar('tarifa_editada', 'tarifa', id, {'antes': antes, 'despues': {
-        'precioBase': tarifa.precioBase, 'precioPorKg': tarifa.precioPorKg}})
+    if 'precioMinimo' in data:
+        tarifa.precioMinimo = dinero(data, 'precioMinimo') or 0
+    if 'diasEntrega' in data:
+        tarifa.diasEntrega = entero(data, 'diasEntrega', minimo=0, maximo=60)
+    auditar('tarifa_editada', 'tarifa', id, {'antes': antes, 'despues': {c: getattr(tarifa, c) for c in campos}})
     conexion.session.commit()
     return {'message': 'Tarifa actualizada exitosamente', 'content': TarifaZonaDto().dump(tarifa)}, 200
 
@@ -138,89 +147,6 @@ def eliminarTarifa(id):
     auditar('tarifa_desactivada', 'tarifa', id)
     conexion.session.commit()
     return {'message': 'Tarifa desactivada exitosamente'}, 200
-
-
-@bp.route('/almacen', methods=['POST'])
-@requiereRol('admin')
-def crearAlmacen():
-    data = cuerpoJson()
-    zonaId = entero(data, 'zonaId', requerido=True)
-    exigirZonaActiva(zonaId)
-    nuevo = AlmacenModel(
-        nombre=texto(data, 'nombre', requerido=True, maximo=100),
-        calle=texto(data, 'calle', requerido=True, maximo=300),
-        zonaId=zonaId,
-        telefono=telefono(data),
-        latitud=coordenada(data, 'latitud', 'lat'),
-        longitud=coordenada(data, 'longitud', 'lon'),
-    )
-    conexion.session.add(nuevo)
-    conexion.session.commit()
-    return {'content': AlmacenDto().dump(nuevo)}, 201
-
-
-@bp.route('/almacen/<int:id>', methods=['PUT'])
-@requiereRol('admin')
-def editarAlmacen(id):
-    data = cuerpoJson()
-    almacen = obtener(AlmacenModel, id, 'Almacen no existe')
-
-    if 'nombre' in data:
-        almacen.nombre = texto(data, 'nombre', requerido=True, maximo=100)
-    if 'calle' in data:
-        almacen.calle = texto(data, 'calle', requerido=True, maximo=300)
-    if 'zonaId' in data:
-        nuevaZona = entero(data, 'zonaId', requerido=True)
-        if nuevaZona != almacen.zonaId:
-            exigirZonaActiva(nuevaZona)
-            activos = conexion.session.query(PedidoModel).filter(
-                PedidoModel.almacenId == id, PedidoModel.estadoId.in_(idsEstados(ESTADOS_ACTIVOS))
-            ).count()
-            if activos:
-                raise ErrorNegocio(f'No se puede cambiar la zona: el almacen tiene {activos} pedido(s) en curso', 409)
-            almacen.zonaId = nuevaZona
-    if 'telefono' in data:
-        almacen.telefono = telefono(data)
-    if 'latitud' in data:
-        almacen.latitud = coordenada(data, 'latitud', 'lat')
-    if 'longitud' in data:
-        almacen.longitud = coordenada(data, 'longitud', 'lon')
-
-    conexion.session.commit()
-    return {'message': 'Almacen actualizado exitosamente', 'content': AlmacenDto().dump(almacen)}, 200
-
-
-@bp.route('/almacenes', methods=['GET'])
-@requiereLogin
-def listarAlmacenes():
-    query = conexion.session.query(AlmacenModel)
-    if request.args.get('incluir_inactivos') != 'true':
-        query = query.filter_by(activo=True)
-    return {'content': AlmacenDto().dump(query.order_by(AlmacenModel.nombre).all(), many=True)}, 200
-
-
-@bp.route('/almacen/<int:id>/desactivar', methods=['POST'])
-@requiereRol('admin')
-def desactivarAlmacen(id):
-    almacen = obtener(AlmacenModel, id, 'Almacen no existe')
-    activos = conexion.session.query(PedidoModel).filter(
-        PedidoModel.almacenId == id, PedidoModel.estadoId.in_(idsEstados(ESTADOS_ACTIVOS))
-    ).count()
-    if activos:
-        raise ErrorNegocio(f'El almacen tiene {activos} pedido(s) en curso; no se puede desactivar todavia', 409)
-    almacen.activo = False
-    auditar('almacen_desactivado', 'almacen', id)
-    conexion.session.commit()
-    return {'message': 'Almacen desactivado exitosamente'}, 200
-
-
-@bp.route('/almacen/<int:id>/activar', methods=['POST'])
-@requiereRol('admin')
-def activarAlmacen(id):
-    almacen = obtener(AlmacenModel, id, 'Almacen no existe')
-    almacen.activo = True
-    conexion.session.commit()
-    return {'message': 'Almacen activado exitosamente'}, 200
 
 
 @bp.route('/estados', methods=['GET'])

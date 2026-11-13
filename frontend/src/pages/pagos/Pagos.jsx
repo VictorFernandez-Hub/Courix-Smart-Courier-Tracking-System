@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
 import Modal from '../../components/ui/Modal'
+import Recaudos from './Recaudos'
+import CierreCaja from './CierreCaja'
+import CarteraCredito from './CarteraCredito'
 import { listarPagos, marcarPagoComoPagado, liquidacionesPendientes, liquidarRuta } from '../../api'
 
 export default function Pagos() {
@@ -124,6 +127,10 @@ export default function Pagos() {
           ))}
         </div>
       )}
+
+      <Recaudos onAviso={mostrarMensaje} />
+      <CarteraCredito onAviso={mostrarMensaje} />
+      <CierreCaja key={mensaje ? 'tras-aviso' : 'base'} onAviso={mostrarMensaje} />
 
       <div className="filters">
         <button className={`filter-pill${filtro === '' ? ' active' : ''}`} onClick={() => cambiarFiltro('')}>Todos</button>

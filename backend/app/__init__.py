@@ -23,7 +23,7 @@ def crear_app():
     from app.extensions import conexion, migrate, jwt, limiter
     from app.core.seguridad import registrarSeguridadHttp
     from app import models  # noqa: F401  (registra todas las tablas)
-    from app.cli import comandoSembrar, comandoCrearAdmin
+    from app.cli import comandoSembrar, comandoCrearAdmin, comandoReenviarAvisos
     from app.routes import BLUEPRINTS
 
     logging.basicConfig(
@@ -65,6 +65,7 @@ def crear_app():
 
     app.cli.add_command(comandoSembrar)
     app.cli.add_command(comandoCrearAdmin)
+    app.cli.add_command(comandoReenviarAvisos)
     return app
 
 

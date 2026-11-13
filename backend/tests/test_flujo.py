@@ -1,5 +1,7 @@
 """Flujo de negocio completo: tarifa, asignacion, entrega, cobro, liquidacion."""
 
+from conftest import ENTREGA_OK
+
 
 def _flujoHastaEnCamino(escenario, **extra):
     repa = escenario['repa']
@@ -20,14 +22,23 @@ def test_monto_se_calcula_con_la_tarifa_en_decimal(escenario):
     assert pedido['codigoGuia'].startswith('CE-') and len(pedido['codigoGuia']) == 12
 
 
-def test_contra_entrega_sin_tarifa_ni_monto_se_rechaza(escenario, admin):
+def test_sin_tarifa_ni_monto_se_rechaza_en_cualquier_modalidad(escenario, admin):
     otra = admin.post('/zona', {'nombre': 'Sur'}).get_json()['content']
     direccion = admin.post('/direccion-cliente', {
         'clienteId': escenario['cliente']['id'], 'zonaId': otra['id'], 'calle': 'Calle Sur 1'}).get_json()['content']
-    r = admin.post('/pedido', {'clienteId': escenario['cliente']['id'], 'almacenId': escenario['almacen']['id'],
-                               'direccionEntregaId': direccion['id']})
-    assert r.status_code == 400
-    assert 'tarifa' in r.get_json()['message']
+    datos = {'clienteId': escenario['cliente']['id'], 'almacenId': escenario['almacen']['id'],
+             'direccionEntregaId': direccion['id']}
+    # Sin agencia en la zona: no hay quien reparta
+    r = admin.post('/pedido', datos)
+    assert r.status_code == 400 and 'cobertura' in r.get_json()['message']
+
+    admin.post('/almacen', {'nombre': 'Agencia Sur', 'calle': 'Av. Sur 1', 'zonaId': otra['id']})
+    for modalidad in ('contra_entrega', 'prepagado'):
+        r = admin.post('/pedido', {**datos, 'modalidadPago': modalidad})
+        assert r.status_code == 400 and 'tarifa' in r.get_json()['message']
+    # Precio manual: exige el motivo
+    assert admin.post('/pedido', {**datos, 'monto': '20.00'}).status_code == 400
+    assert admin.post('/pedido', {**datos, 'monto': '20.00', 'motivoMonto': 'Sin tarifa a Sur'}).status_code == 201
 
 
 def test_repartidor_no_toma_pedidos_de_otra_zona(escenario):
@@ -40,18 +51,18 @@ def test_entrega_exige_monto_exacto_y_es_idempotente(escenario):
     repa = escenario['repa']
     pedido, _ = _flujoHastaEnCamino(escenario)
 
-    r = repa.post(f'/pedido/{pedido["id"]}/entregar-y-cobrar', {'monto': 5, 'metodo': 'efectivo'})
+    r = repa.post(f'/pedido/{pedido["id"]}/entregar-y-cobrar', {**ENTREGA_OK, 'monto': 5, 'metodo': 'efectivo'})
     assert r.status_code == 409
 
-    r = repa.post(f'/pedido/{pedido["id"]}/entregar-y-cobrar', {'monto': '11.00', 'metodo': 'yape'})
+    r = repa.post(f'/pedido/{pedido["id"]}/entregar-y-cobrar', {**ENTREGA_OK, 'monto': '11.00', 'metodo': 'yape'})
     assert r.status_code == 400  # yape sin numero de operacion
 
-    r = repa.post(f'/pedido/{pedido["id"]}/entregar-y-cobrar', {'monto': '11.00', 'metodo': 'efectivo'})
+    r = repa.post(f'/pedido/{pedido["id"]}/entregar-y-cobrar', {**ENTREGA_OK, 'monto': '11.00', 'metodo': 'efectivo'})
     assert r.status_code == 200
     assert r.get_json()['content']['pago']['monto'] == '11.00'
 
     # reintento por mala senal: mismo resultado, sin duplicar el pago
-    r2 = repa.post(f'/pedido/{pedido["id"]}/entregar-y-cobrar', {'monto': '11.00', 'metodo': 'efectivo'})
+    r2 = repa.post(f'/pedido/{pedido["id"]}/entregar-y-cobrar', {**ENTREGA_OK, 'monto': '11.00', 'metodo': 'efectivo'})
     assert r2.status_code == 200
     assert r2.get_json()['content']['pago']['id'] == r.get_json()['content']['pago']['id']
 
@@ -62,13 +73,21 @@ def test_entregado_solo_por_entregar_y_cobrar(escenario):
     assert r.status_code == 409
 
 
-def test_prepagado_se_entrega_sin_cobro(escenario, admin):
-    pedido, _ = _flujoHastaEnCamino(escenario, modalidadPago='prepagado')
-    r = escenario['repa'].post(f'/pedido/{pedido["id"]}/entregar-y-cobrar', {})
+def test_prepagado_no_sale_a_reparto_sin_pago_y_se_entrega_sin_cobro(escenario, admin):
+    repa = escenario['repa']
+    pedido = escenario['nuevoPedido'](modalidadPago='prepagado')
+    tomar = lambda: repa.post(f'/pedido/{pedido["id"]}/tomar', {'repartidorId': escenario['repartidor']['id']})  # noqa: E731
+    r = tomar()
+    assert r.status_code == 409 and 'prepagado' in r.get_json()['message']
+
+    assert admin.post('/pago', {'pedidoId': pedido['id'], 'monto': pedido['monto'], 'metodo': 'transferencia',
+                                'estadoPago': 'pagado', 'referencia': 'OP-123'}).status_code == 201
+    ruta = tomar().get_json()['ruta']['id']
+    repa.post(f'/ruta/{ruta}/iniciar')
+    repa.post(f'/pedido/{pedido["id"]}/estado', {'estado': 'en_camino'})
+    r = repa.post(f'/pedido/{pedido["id"]}/entregar-y-cobrar', {**ENTREGA_OK})
     assert r.status_code == 200
     assert r.get_json()['content']['pago'] is None
-    assert admin.post('/pago', {'pedidoId': pedido['id'], 'monto': '11.00', 'metodo': 'transferencia',
-                                'estadoPago': 'pagado', 'referencia': 'OP-123'}).status_code == 201
 
 
 def test_no_entregado_exige_motivo_y_limita_intentos(escenario, app):
@@ -84,14 +103,14 @@ def test_no_entregado_exige_motivo_y_limita_intentos(escenario, app):
     assert repa.post(url, {'estado': 'no_entregado', 'motivo': 'cliente_ausente'}).status_code == 200
     # segundo fallo con maximo 2: ya no se puede reintentar
     assert repa.post(url, {'estado': 'asignado'}).status_code == 409
-    # el repartidor no puede marcarlo devuelto: lo confirma el almacen
-    assert repa.post(url, {'estado': 'devuelto'}).status_code == 403
+    # el repartidor no inicia la devolucion: la agencia que recibe el paquete
+    assert repa.post(url, {'estado': 'por_devolver'}).status_code == 403
 
 
 def test_liquidacion_de_caja(escenario, admin):
     repa = escenario['repa']
     pedido, rutaId = _flujoHastaEnCamino(escenario)
-    repa.post(f'/pedido/{pedido["id"]}/entregar-y-cobrar', {'monto': '11.00', 'metodo': 'efectivo'})
+    repa.post(f'/pedido/{pedido["id"]}/entregar-y-cobrar', {**ENTREGA_OK, 'monto': '11.00', 'metodo': 'efectivo'})
 
     r = repa.post(f'/ruta/{rutaId}/completar')
     assert r.status_code == 200
@@ -112,7 +131,7 @@ def test_rutas_sin_liquidar_bloquean_tomar_pedidos(escenario, app):
     app.config['MAX_RUTAS_SIN_LIQUIDAR'] = 0
     repa = escenario['repa']
     pedido, rutaId = _flujoHastaEnCamino(escenario)
-    repa.post(f'/pedido/{pedido["id"]}/entregar-y-cobrar', {'monto': '11.00', 'metodo': 'efectivo'})
+    repa.post(f'/pedido/{pedido["id"]}/entregar-y-cobrar', {**ENTREGA_OK, 'monto': '11.00', 'metodo': 'efectivo'})
     repa.post(f'/ruta/{rutaId}/completar')
 
     otro = escenario['nuevoPedido']()
@@ -144,7 +163,7 @@ def test_listado_de_pedidos_no_incluye_la_foto(escenario):
     repa = escenario['repa']
     pedido, _ = _flujoHastaEnCamino(escenario)
     foto = 'data:image/jpeg;base64,' + 'A' * 100
-    repa.post(f'/pedido/{pedido["id"]}/entregar-y-cobrar', {'monto': '11.00', 'evidenciaEntrega': foto})
+    repa.post(f'/pedido/{pedido["id"]}/entregar-y-cobrar', {**ENTREGA_OK, 'monto': '11.00', 'evidenciaEntrega': foto})
     fila = repa.get('/pedidos').get_json()['content'][0]
     assert 'evidenciaEntrega' not in fila
     assert repa.get(f'/pedido/{pedido["id"]}/evidencia').get_json()['content'] == foto

@@ -9,7 +9,7 @@ from app.extensions import conexion
 from app.models import (
     UsuarioModel, ZonaModel, ClienteModel, DireccionModel, AlmacenModel, RepartidorModel,
     EstadoPedidoModel, TarifaZonaModel, RutaModel, PedidoModel, HistorialEstadoModel,
-    PagoModel, LiquidacionRutaModel,
+    PagoModel, LiquidacionRutaModel, BultoModel, RecaudoModel,
 )
 from app.core.seguridad import (
     usuarioActualId, rolActual, esStaff,
@@ -62,9 +62,77 @@ def exigirMiRepartidor():
     return perfil
 
 
+def agenciaDelUsuario():
+    """Agencia a la que esta limitado el usuario actual. Solo aplica a
+    operadores con agencia asignada; None = ve todas (admin)."""
+    if rolActual() != 'operador':
+        return None
+    usuario = conexion.session.get(UsuarioModel, usuarioActualId())
+    return usuario.agenciaId if usuario else None
+
+
+def agenciaReparto(pedido):
+    """Agencia desde donde sale el reparto final."""
+    return pedido.agenciaDestinoId or pedido.almacenId
+
+
+def esEnvioLocal(pedido):
+    return agenciaReparto(pedido) == pedido.almacenId
+
+
+def estadoListoParaReparto(pedido):
+    """Un envio local se reparte desde el almacen de origen; uno a otra
+    ciudad, cuando ya llego a la agencia de destino."""
+    return 'en_almacen' if esEnvioLocal(pedido) else 'en_agencia_destino'
+
+
+def agenciaDondeEsta(pedido):
+    """Agencia que tiene fisicamente un envio en devolucion (por_devolver):
+    la de reparto mientras no emprenda el regreso, la de origen despues."""
+    return pedido.almacenId if pedido.retornoAlOrigen else agenciaReparto(pedido)
+
+
+def faltaPagoPrepagado(pedido):
+    """Un prepagado no sale de la agencia (ni en manifiesto ni a reparto)
+    sin su pago confirmado."""
+    if pedido.modalidadPago != 'prepagado':
+        return False
+    return not conexion.session.query(PagoModel.id).filter_by(pedidoId=pedido.id, estadoPago='pagado').first()
+
+
+def filtrarRutasPorAgencia(query, agenciaId):
+    """Rutas (y lo que cuelga de ellas: liquidaciones) de la zona de la agencia."""
+    if not agenciaId:
+        return query
+    agencia = conexion.session.get(AlmacenModel, agenciaId)
+    return query.filter(RutaModel.zonaId == (agencia.zonaId if agencia else -1))
+
+
+def exigirAccesoRuta(ruta):
+    propia = agenciaDelUsuario()
+    if propia:
+        agencia = conexion.session.get(AlmacenModel, propia)
+        if not agencia or agencia.zonaId != ruta.zonaId:
+            raise ErrorNegocio('Ruta no existe', 404)
+
+
+def filtrarPorAgencia(query, agenciaId):
+    """Un operador de agencia solo ve los envios que salen o llegan a ella."""
+    if not agenciaId:
+        return query
+    return query.filter((PedidoModel.almacenId == agenciaId) | (PedidoModel.agenciaDestinoId == agenciaId))
+
+
+def exigirMiAgencia(agenciaId, mensaje='Solo puedes operar envios de tu agencia'):
+    propia = agenciaDelUsuario()
+    if propia and propia != agenciaId:
+        raise ErrorNegocio(mensaje, 403)
+
+
 def puedeVerPedido(pedido):
     if esStaff():
-        return True
+        propia = agenciaDelUsuario()
+        return not propia or propia in (pedido.almacenId, agenciaReparto(pedido))
     perfil = miRepartidor()
     return perfil is not None and pedido.repartidorId == perfil.id
 
@@ -130,19 +198,24 @@ def generarCodigoGuia():
     raise ErrorNegocio('No se pudo generar un codigo de guia unico, intenta de nuevo', 500)
 
 
-def buscarTarifa(zonaOrigenId, zonaDestinoId):
+def buscarTarifa(zonaOrigenId, zonaDestinoId, servicio='estandar'):
     if not zonaOrigenId or not zonaDestinoId:
         return None
     return conexion.session.query(TarifaZonaModel).filter_by(
-        zonaOrigenId=zonaOrigenId, zonaDestinoId=zonaDestinoId, activo=True
+        zonaOrigenId=zonaOrigenId, zonaDestinoId=zonaDestinoId, tipoServicio=servicio, activo=True
     ).first()
 
 
 def efectivoEsperadoDeRuta(rutaId):
-    total = conexion.session.query(func.coalesce(func.sum(PagoModel.monto), 0)).filter(
+    """Todo el efectivo que el repartidor cobro en la ruta: fletes contra
+    entrega Y recaudos de mercaderia (que luego se pagan al remitente)."""
+    fletes = conexion.session.query(func.coalesce(func.sum(PagoModel.monto), 0)).filter(
         PagoModel.rutaId == rutaId, PagoModel.metodo == 'efectivo', PagoModel.estadoPago == 'pagado'
     ).scalar()
-    return aDecimal(total)
+    recaudos = conexion.session.query(func.coalesce(func.sum(RecaudoModel.monto), 0)).filter(
+        RecaudoModel.rutaId == rutaId, RecaudoModel.metodo == 'efectivo'
+    ).scalar()
+    return aDecimal(fletes) + aDecimal(recaudos)
 
 
 def rutasSinLiquidar(repartidorId):
@@ -191,10 +264,20 @@ def asignarPedidoARuta(pedidoId, repartidor, ruta, comentario):
 
     if pedido.repartidorId is not None or pedido.rutaId is not None:
         raise ErrorNegocio('Este pedido ya fue tomado por otro repartidor', 409)
-    if pedido.estadoId != idEstado('en_almacen'):
-        raise ErrorNegocio('Este pedido todavia no ha ingresado fisicamente al almacen', 409)
+    if pedido.estadoId != idEstado(estadoListoParaReparto(pedido)):
+        if esEnvioLocal(pedido):
+            raise ErrorNegocio('Este pedido todavia no ha ingresado fisicamente al almacen', 409)
+        raise ErrorNegocio('Este envio todavia no llega a la agencia de destino', 409)
 
-    almacen = conexion.session.get(AlmacenModel, pedido.almacenId)
+    if faltaPagoPrepagado(pedido):
+        raise ErrorNegocio(f'El envio {pedido.codigoGuia} es prepagado y no tiene el pago confirmado: '
+                           'no puede salir a reparto', 409)
+    if (pedido.intentosEntrega or 0) >= current_app.config['MAX_INTENTOS_ENTREGA']:
+        raise ErrorNegocio(f'El envio {pedido.codigoGuia} ya agoto sus intentos de entrega: debe devolverse '
+                           'al remitente', 409)
+
+    # El repartidor debe ser de la zona de la agencia donde esta el paquete
+    almacen = conexion.session.get(AlmacenModel, agenciaReparto(pedido))
     if not almacen or almacen.zonaId != repartidor.zonaId or (ruta and ruta.zonaId != repartidor.zonaId):
         raise ErrorNegocio('Este pedido pertenece a una zona distinta a la del repartidor', 400)
 
@@ -215,6 +298,36 @@ def asignarPedidoARuta(pedidoId, repartidor, ruta, comentario):
     return pedido, ruta
 
 
+def totalACobrar(pedido):
+    """Lo que el repartidor debe cobrar en la puerta: el flete (si es contra
+    entrega y no esta pagado) mas el recaudo del producto (si no se cobro)."""
+    total = aDecimal(0)
+    if pedido.modalidadPago == 'contra_entrega' and not conexion.session.query(PagoModel.id).filter_by(
+            pedidoId=pedido.id).first():
+        total += aDecimal(pedido.monto)
+    if aDecimal(pedido.montoRecaudo) > 0 and not conexion.session.query(RecaudoModel.id).filter_by(
+            pedidoId=pedido.id).first():
+        total += aDecimal(pedido.montoRecaudo)
+    return total
+
+
+def devolverAAgencia(pedido, ruta, maximoIntentos):
+    """Cierre de ruta: un envio no entregado vuelve a la agencia. Si aun le
+    quedan intentos queda listo para reintentar; si no (o lo rechazaron),
+    pasa a devolucion al remitente. Devuelve el estado en que queda."""
+    agotado = (pedido.intentosEntrega or 0) >= maximoIntentos or pedido.motivoNoEntrega == 'rechazado'
+    destino = 'por_devolver' if agotado else estadoListoParaReparto(pedido)
+    pedido.repartidorId = None
+    pedido.rutaId = None
+    pedido.estadoId = idEstado(destino)
+    motivo = ('rechazado por el destinatario' if pedido.motivoNoEntrega == 'rechazado'
+              else f'{pedido.intentosEntrega} intento(s) fallido(s)')
+    registrarHistorial(pedido.id, pedido.estadoId, comentario=(
+        f'Volvio a la agencia al cerrar la ruta {ruta.codigo}: ' +
+        (f'{motivo}, se devolvera al remitente' if agotado else 'queda listo para reintentar la entrega')))
+    return destino
+
+
 def construirDetallePedido(pedido):
     """Lo que necesita el repartidor para entregar. Solo datos minimos del
     destinatario (sin DNI ni email: minimizacion de datos personales)."""
@@ -227,6 +340,11 @@ def construirDetallePedido(pedido):
         'prioridad': pedido.prioridad,
         'monto': str(pedido.monto),
         'modalidadPago': pedido.modalidadPago,
+        'montoRecaudo': str(aDecimal(pedido.montoRecaudo)),
+        'totalACobrar': str(totalACobrar(pedido)),
+        'tipoServicio': pedido.tipoServicio,
+        'requierePin': bool(pedido.requierePin),
+        'bultos': conexion.session.query(BultoModel.id).filter_by(pedidoId=pedido.id).count(),
         'intentosEntrega': pedido.intentosEntrega,
         'descripcionProducto': pedido.descripcionProducto,
         'notas': pedido.notas,
@@ -257,6 +375,16 @@ def construirDetalleRuta(ruta):
         'efectivoCobrado': str(efectivoEsperadoDeRuta(ruta.id)),
         'pedidos': [construirDetallePedido(p) for p in pedidos],
     }
+
+def bultosAdmitidosDeRecojo(recojoId):
+    """Bultos ya admitidos en agencia de los envios que salieron de un recojo
+    (un envio pre-registrado sin bultos cuenta como 1)."""
+    pedidos = conexion.session.query(PedidoModel.id).filter_by(solicitudRecojoId=recojoId).all()
+    total = 0
+    for (pedidoId,) in pedidos:
+        total += conexion.session.query(BultoModel.id).filter_by(pedidoId=pedidoId).count() or 1
+    return total
+
 
 def exigirZonaActiva(zonaId):
     if zonaId is None:

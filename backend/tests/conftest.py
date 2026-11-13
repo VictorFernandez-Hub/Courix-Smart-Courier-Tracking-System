@@ -10,6 +10,8 @@ os.environ['APP_ENV'] = 'testing'
 os.environ['DATABASE_URL'] = f'sqlite:///{_dbTemporal}'
 os.environ['JWT_SECRET_KEY'] = 'clave-de-pruebas-no-usar-en-produccion-0123456789'
 os.environ['RATELIMIT_ENABLED'] = 'false'
+# El captcha se prueba aparte (test_acceso.py), activandolo en esas pruebas.
+os.environ['CAPTCHA_HABILITADO'] = 'false'
 os.environ.pop('ORIGENES_PERMITIDOS', None)
 
 from werkzeug.security import generate_password_hash  # noqa: E402
@@ -23,6 +25,12 @@ aplicacion = crear_app()
 
 PASSWORD = 'ClaveSegura123'
 
+BULTO_2KG = {'bultos': [{'pesoKg': 2, 'largoCm': 10, 'anchoCm': 10, 'altoCm': 10}]}
+# Constancia de entrega minima: quien recibe, su DNI y su firma
+FIRMA = 'data:image/png;base64,' + 'A' * 100
+ENTREGA_OK = {'nombreReceptor': 'Ana Torres', 'dniReceptor': '12345678', 'firma': FIRMA}
+INSPECCION_OK = {'estadoProducto': 'bueno', 'embalaje': 'adecuado', 'declaraSinProhibidos': True}
+
 
 @pytest.fixture
 def app():
@@ -31,7 +39,7 @@ def app():
         conexion.create_all()
         sembrarEstados()
         conexion.session.add(UsuarioModel(
-            nombre='Admin', email='admin@test.pe', passwordHash=generate_password_hash(PASSWORD), rol='admin'))
+            nombre='Admin', nombreUsuario='admin', email='admin@test.pe', passwordHash=generate_password_hash(PASSWORD), rol='admin'))
         conexion.session.commit()
         yield aplicacion
         conexion.session.remove()
@@ -62,8 +70,9 @@ class Api:
         return self.client.put(url, json=json or {}, headers=self._h())
 
 
-def iniciarSesion(client, correo, password=PASSWORD):
-    r = client.post('/login', json={'email': correo, 'password': password})
+def iniciarSesion(client, usuario, password=PASSWORD):
+    # Acepta 'op' o 'op@test.pe' (en las pruebas el usuario es la parte antes de la @)
+    r = client.post('/login', json={'usuario': usuario.split('@')[0], 'password': password})
     assert r.status_code == 200, r.get_json()
     return Api(client, r.get_json()['accessToken'])
 
@@ -85,7 +94,9 @@ def escenario(client, admin):
         'clienteId': cliente['id'], 'zonaId': zona['id'], 'calle': 'Jr. Bolivar 456'}).get_json()['content']
 
     def crearRepartidor(correo, zonaId):
-        u = admin.post('/usuario', {'nombre': 'Repa', 'email': correo, 'password': PASSWORD, 'rol': 'repartidor'})
+        u = admin.post('/usuario', {'nombre': 'Repa', 'usuario': correo.split('@')[0], 'email': correo,
+                                    'dni': f'{abs(hash(correo)) % 10**8:08d}', 'celular': '987654321',
+                                    'password': PASSWORD, 'rol': 'repartidor'})
         assert u.status_code == 201, u.get_json()
         perfil = admin.post('/repartidor', {'usuarioId': u.get_json()['content']['id'], 'zonaId': zonaId}).get_json()['content']
         return perfil, iniciarSesion(client, correo)
@@ -94,8 +105,10 @@ def escenario(client, admin):
     repartidor2, repa2 = crearRepartidor('repa2@test.pe', otraZona['id'])
 
     def nuevoPedido(**extra):
+        # Admision completa en mostrador: un bulto de 2 kg (10x10x10 cm = 0.2 kg
+        # volumetrico, asi que se cobra el peso real) e inspeccion aprobada.
         datos = {'clienteId': cliente['id'], 'almacenId': almacen['id'], 'direccionEntregaId': direccion['id'],
-                 'pesoKg': 2, 'yaEnAlmacen': True}
+                 'yaEnAlmacen': True, **BULTO_2KG, **INSPECCION_OK}
         datos.update(extra)
         r = admin.post('/pedido', datos)
         assert r.status_code == 201, r.get_json()

@@ -1,4 +1,4 @@
-// Catalogos del negocio: estados, zonas, almacenes y tarifas.
+// Catalogos del negocio: estados, zonas y tarifas (agencias en almacenes.js).
 import { apiFetch } from './cliente'
 
 export const listarEstados = () => apiFetch('/estados')
@@ -15,19 +15,6 @@ export const editarZona = (id, payload) =>
 export const desactivarZona = (id) => apiFetch(`/zona/${id}/desactivar`, { method: 'POST' })
 
 export const activarZona = (id) => apiFetch(`/zona/${id}/activar`, { method: 'POST' })
-
-export const listarAlmacenes = (incluirInactivos = false) =>
-  apiFetch(`/almacenes${incluirInactivos ? '?incluir_inactivos=true' : ''}`)
-
-export const crearAlmacen = (payload) =>
-  apiFetch('/almacen', { method: 'POST', body: JSON.stringify(payload) })
-
-export const editarAlmacen = (id, payload) =>
-  apiFetch(`/almacen/${id}`, { method: 'PUT', body: JSON.stringify(payload) })
-
-export const desactivarAlmacen = (id) => apiFetch(`/almacen/${id}/desactivar`, { method: 'POST' })
-
-export const activarAlmacen = (id) => apiFetch(`/almacen/${id}/activar`, { method: 'POST' })
 
 export const listarTarifas = () => apiFetch('/tarifas')
 

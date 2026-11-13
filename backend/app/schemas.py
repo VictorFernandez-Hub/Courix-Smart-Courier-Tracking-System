@@ -4,7 +4,7 @@
 from app.models import (
     UsuarioModel, ZonaModel, ClienteModel, DireccionModel, AlmacenModel, RepartidorModel,
     EstadoPedidoModel, TarifaZonaModel, RutaModel, PedidoModel, HistorialEstadoModel,
-    PagoModel, IncidenciaModel, LiquidacionRutaModel,
+    PagoModel, IncidenciaModel, LiquidacionRutaModel, BultoModel,
 )
 from marshmallow_sqlalchemy import SQLAlchemyAutoSchema
 
@@ -58,7 +58,8 @@ class PedidoDto(SQLAlchemyAutoSchema):
         include_fk = True
         # La foto en base64 puede pesar cientos de KB: nunca va en listados.
         # Se pide aparte con GET /pedido/<id>/evidencia.
-        exclude = ('evidenciaEntrega',)
+        # pinHash nunca sale de la API: con el hash se podria adivinar el PIN offline
+        exclude = ('evidenciaEntrega', 'fotoInspeccion', 'detalleCotizacion', 'pinHash')
 
 
 class RutaDto(SQLAlchemyAutoSchema):
@@ -94,4 +95,10 @@ class TarifaZonaDto(SQLAlchemyAutoSchema):
 class LiquidacionRutaDto(SQLAlchemyAutoSchema):
     class Meta:
         model = LiquidacionRutaModel
+        include_fk = True
+
+
+class BultoDto(SQLAlchemyAutoSchema):
+    class Meta:
+        model = BultoModel
         include_fk = True

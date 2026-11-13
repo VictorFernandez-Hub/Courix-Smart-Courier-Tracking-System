@@ -11,6 +11,8 @@ class DireccionModel(conexion.Model):
     referencia = Column(type_=types.Text)
     latitud = Column(type_=types.Float, nullable=True)
     longitud = Column(type_=types.Float, nullable=True)
+    # Direccion que se propone por defecto al admitir un envio para el cliente
+    esPrincipal = Column(name='es_principal', type_=types.Boolean, nullable=False, server_default='0', default=False)
     activo = Column(type_=types.Boolean, server_default='1')
     fechaCreacion = Column(name='fecha_creacion', type_=types.DateTime, server_default=conexion.func.now())
     fechaActualizacion = Column(name='fecha_actualizacion', type_=types.DateTime,

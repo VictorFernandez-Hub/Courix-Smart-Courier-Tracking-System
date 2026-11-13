@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { rastrearPorCodigoGuia } from '../../api'
 
@@ -10,7 +10,9 @@ const ETIQUETAS = {
   en_camino: 'En camino',
   entregado: 'Entregado',
   no_entregado: 'Intento de entrega fallido',
-  devuelto: 'Devuelto',
+  por_devolver: 'En devolución al remitente',
+  devuelto: 'Devuelto al remitente',
+  extraviado: 'Con incidencia: comunícate con la agencia',
   cancelado: 'Cancelado',
 }
 
@@ -20,9 +22,24 @@ export default function RastreoPublico() {
   const [cargando, setCargando] = useState(false)
   const [error, setError] = useState('')
 
-  async function manejarEnvio(e) {
+  // El enlace de los avisos trae la guia: /rastreo?guia=CE-XXXX-XXXX
+  useEffect(() => {
+    const guia = new URLSearchParams(window.location.search).get('guia')
+    if (guia) {
+      setCodigo(guia)
+      buscar(guia)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  function manejarEnvio(e) {
     e.preventDefault()
-    if (!codigo.trim()) return
+    buscar(codigo)
+  }
+
+  async function buscar(valor) {
+    if (!valor.trim()) return
+    const codigo = valor
     setError('')
     setResultado(null)
     setCargando(true)
@@ -70,6 +87,11 @@ export default function RastreoPublico() {
                 <div className="ruta-estado-label">
                   Estado actual: {ETIQUETAS[resultado.estadoActual] || resultado.estadoActual}
                 </div>
+                {resultado.fechaEntregaEstimada && !['entregado', 'devuelto', 'cancelado', 'extraviado'].includes(resultado.estadoActual) && (
+                  <div className="ruta-estado-label">
+                    Entrega estimada: {new Date(resultado.fechaEntregaEstimada + 'T12:00').toLocaleDateString('es-PE', { weekday: 'long', day: 'numeric', month: 'long' })}
+                  </div>
+                )}
               </div>
             </div>
 

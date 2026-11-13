@@ -6,6 +6,9 @@ import {
   cambiarEstadoPedido, entregarYCobrar, iniciarRuta, completarRuta,
   cambiarDisponibilidadRepartidor,
 } from '../../api'
+import { comprimirImagen } from '../../utils/imagen'
+import FirmaPad from '../../components/ui/FirmaPad.jsx'
+import RecojosRepartidor from './RecojosRepartidor.jsx'
 
 // Que boton(es) mostrar segun el estado actual del pedido. "asignado" salta
 // directo a "en_camino" (ya no exige el paso intermedio de "recogido").
@@ -31,6 +34,25 @@ const MOTIVOS_NO_ENTREGA = {
   otro: 'Otro motivo',
 }
 
+// Constancia de entrega: quien recibe, su DNI y su firma (y el PIN si el envio lo exige)
+const COBRO_VACIO = {
+  metodo: 'efectivo', referencia: '', foto: null,
+  nombreReceptor: '', dniReceptor: '', relacion: 'titular', firma: null, pin: '',
+}
+const RELACIONES = { titular: 'El destinatario', familiar: 'Familiar', trabajador: 'Trabajador / compañero', porteria: 'Portería / conserje', otro: 'Otra persona' }
+
+function obtenerUbicacion() {
+  // La ubicacion acompana la constancia; si el celular no la da, se entrega igual
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) return resolve({})
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({ latitud: pos.coords.latitude, longitud: pos.coords.longitude }),
+      () => resolve({}),
+      { timeout: 4000, maximumAge: 60000 },
+    )
+  })
+}
+
 export default function MiRuta() {
   const usuario = getUsuario()
   const [miRepartidor, setMiRepartidor] = useState(null)
@@ -41,7 +63,7 @@ export default function MiRuta() {
   const [procesando, setProcesando] = useState(false)
 
   const [pedidoACobrar, setPedidoACobrar] = useState(null)
-  const [formCobro, setFormCobro] = useState({ metodo: 'efectivo', referencia: '', foto: null })
+  const [formCobro, setFormCobro] = useState(COBRO_VACIO)
   const [errorCobro, setErrorCobro] = useState('')
   const [mensaje, setMensaje] = useState('')
 
@@ -179,45 +201,15 @@ export default function MiRuta() {
   }
 
   function abrirCobro(pedido) {
-    setFormCobro({ metodo: 'efectivo', referencia: '', foto: null })
+    setFormCobro({ ...COBRO_VACIO, nombreReceptor: pedido.cliente?.nombre || '' })
     setErrorCobro('')
     setPedidoACobrar(pedido)
   }
 
-  const debeCobrar = pedidoACobrar?.modalidadPago === 'contra_entrega' && Number(pedidoACobrar?.monto) > 0
-
-  // Una foto de celular sin comprimir puede pesar varios MB; eso vuelve
-  // lenta la subida en una conexion movil y engorda innecesariamente el
-  // registro en la base de datos. Se redimensiona a un maximo de 1280px de
-  // lado y se reexporta en JPEG calidad 0.7, que para "evidencia de que se
-  // entrego el paquete" es mas que suficiente.
-  function comprimirImagen(archivo, maxLado = 1280, calidad = 0.7) {
-    return new Promise((resolve, reject) => {
-      const lector = new FileReader()
-      lector.onerror = () => reject(new Error('No se pudo leer la imagen'))
-      lector.onload = () => {
-        const img = new Image()
-        img.onerror = () => reject(new Error('No se pudo procesar la imagen'))
-        img.onload = () => {
-          let { width, height } = img
-          if (width > height && width > maxLado) {
-            height = Math.round((height * maxLado) / width)
-            width = maxLado
-          } else if (height > maxLado) {
-            width = Math.round((width * maxLado) / height)
-            height = maxLado
-          }
-          const canvas = document.createElement('canvas')
-          canvas.width = width
-          canvas.height = height
-          canvas.getContext('2d').drawImage(img, 0, 0, width, height)
-          resolve(canvas.toDataURL('image/jpeg', calidad))
-        }
-        img.src = lector.result
-      }
-      lector.readAsDataURL(archivo)
-    })
-  }
+  // Lo que se cobra en la puerta: flete contra entrega + precio del producto (recaudo)
+  const totalCobro = (p) => Number(p?.totalACobrar ?? (p?.modalidadPago === 'contra_entrega' ? p?.monto : 0)) || 0
+  const debeCobrar = totalCobro(pedidoACobrar) > 0
+  const recaudoCobro = Number(pedidoACobrar?.montoRecaudo) || 0
 
   function manejarSeleccionFoto(e) {
     const archivo = e.target.files?.[0]
@@ -232,14 +224,26 @@ export default function MiRuta() {
     setErrorCobro('')
     setProcesando(true)
     try {
+      if (!formCobro.firma) {
+        setErrorCobro('Falta la firma de quien recibe')
+        return
+      }
+      const constancia = {
+        nombreReceptor: formCobro.nombreReceptor.trim(),
+        dniReceptor: formCobro.dniReceptor.trim(),
+        relacionReceptor: formCobro.relacion,
+        firma: formCobro.firma,
+        pin: pedidoACobrar.requierePin ? formCobro.pin.trim() : undefined,
+        evidenciaEntrega: formCobro.foto || undefined,
+        ...(await obtenerUbicacion()),
+      }
       await entregarYCobrar(pedidoACobrar.pedidoId, debeCobrar ? {
+        ...constancia,
         monto: pedidoACobrar.monto,
+        montoRecaudo: recaudoCobro > 0 ? pedidoACobrar.montoRecaudo : undefined,
         metodo: formCobro.metodo,
         referencia: formCobro.referencia || undefined,
-        evidenciaEntrega: formCobro.foto || undefined,
-      } : {
-        evidenciaEntrega: formCobro.foto || undefined,
-      })
+      } : constancia)
       setPedidoACobrar(null)
       await cargarRuta(miRepartidor)
     } catch (err) {
@@ -286,9 +290,11 @@ export default function MiRuta() {
     )
   }
 
+  // Los "no entregado" no impiden cerrar: al completar la ruta vuelven a la agencia
   const pedidosPendientesDeEntrega = ruta
-    ? ruta.pedidos.filter((p) => !['entregado', 'devuelto', 'cancelado'].includes(p.estado)).length
+    ? ruta.pedidos.filter((p) => ['asignado', 'recogido', 'en_camino'].includes(p.estado)).length
     : 0
+  const noEntregadosEnRuta = ruta ? ruta.pedidos.filter((p) => p.estado === 'no_entregado').length : 0
 
   return (
     <div>
@@ -318,6 +324,8 @@ export default function MiRuta() {
         </div>
       )}
 
+      <RecojosRepartidor />
+
       {ruta && (
         <div className="ruta-header">
           <div>
@@ -334,7 +342,8 @@ export default function MiRuta() {
               className="btn btn-secondary"
               onClick={manejarCompletar}
               disabled={procesando || pedidosPendientesDeEntrega > 0}
-              title={pedidosPendientesDeEntrega > 0 ? 'Todavia hay pedidos sin entregar' : ''}
+              title={pedidosPendientesDeEntrega > 0 ? 'Todavia hay pedidos sin entregar'
+                : noEntregadosEnRuta > 0 ? `Al completar, entrega ${noEntregadosEnRuta} paquete(s) no entregado(s) en la agencia` : ''}
             >
               Completar ruta
             </button>
@@ -359,9 +368,11 @@ export default function MiRuta() {
           <div className="route-card-info">
             <div>📍 {p.direccionEntrega?.calle}{p.direccionEntrega?.referencia ? ` — ${p.direccionEntrega.referencia}` : ''}</div>
             <div>📞 <span className="cell-mono">{p.cliente?.telefono}</span></div>
-            <div>📦 {p.descripcionProducto || 'Sin descripción'}</div>
-            <div>💵 {p.modalidadPago === 'contra_entrega'
-              ? <>Cobrar <strong>S/ {Number(p.monto).toFixed(2)}</strong> al entregar</>
+            <div>📦 {p.descripcionProducto || 'Sin descripción'}{p.bultos > 1 && <> · <strong>{p.bultos} bultos</strong></>}</div>
+            {p.requierePin && <div>🔐 Entrega con código: pide el PIN al destinatario</div>}
+            <div>💵 {totalCobro(p) > 0
+              ? <>Cobrar <strong>S/ {totalCobro(p).toFixed(2)}</strong> al entregar
+                {Number(p.montoRecaudo) > 0 && <span className="cell-secondary"> (incluye S/ {Number(p.montoRecaudo).toFixed(2)} del producto)</span>}</>
               : 'Ya pagado / a crédito — no cobrar'}</div>
             {p.notas && <div className="cell-secondary">Nota: {p.notas}</div>}
           </div>
@@ -379,7 +390,7 @@ export default function MiRuta() {
             {p.estado === 'en_camino' && (
               <>
                 <button className="btn btn-success btn-lg" disabled={procesando} onClick={() => abrirCobro(p)}>
-                  {p.modalidadPago === 'contra_entrega' ? 'Entregar y cobrar' : 'Entregar'}
+                  {totalCobro(p) > 0 ? 'Entregar y cobrar' : 'Entregar'}
                 </button>
                 <button
                   className="btn btn-warning btn-lg" disabled={procesando}
@@ -431,7 +442,13 @@ export default function MiRuta() {
               <>
                 <div className="field">
                   <label>Monto a cobrar</label>
-                  <div className="amount" style={{ fontSize: 24 }}>S/ {Number(pedidoACobrar.monto).toFixed(2)}</div>
+                  <div className="amount" style={{ fontSize: 24 }}>S/ {totalCobro(pedidoACobrar).toFixed(2)}</div>
+                  {recaudoCobro > 0 && (
+                    <p className="cell-secondary" style={{ marginTop: 4 }}>
+                      Producto (por cuenta del remitente): S/ {recaudoCobro.toFixed(2)}
+                      {totalCobro(pedidoACobrar) > recaudoCobro && <> · Envío: S/ {(totalCobro(pedidoACobrar) - recaudoCobro).toFixed(2)}</>}
+                    </p>
+                  )}
                   <p className="cell-secondary" style={{ marginTop: 4 }}>
                     Cobra el monto exacto. Si el cliente no puede pagarlo, no confirmes la entrega y reporta el problema.
                   </p>
@@ -464,6 +481,45 @@ export default function MiRuta() {
             ) : (
               <p className="cell-secondary">Este pedido ya está pagado o es a crédito: no cobres nada al cliente.</p>
             )}
+            <div className="section-title">Quién recibe</div>
+            <div className="field">
+              <label htmlFor="relacionReceptor">Recibe</label>
+              <select id="relacionReceptor" value={formCobro.relacion}
+                onChange={(e) => setFormCobro((f) => ({
+                  ...f, relacion: e.target.value,
+                  nombreReceptor: e.target.value === 'titular' ? (pedidoACobrar.cliente?.nombre || '') : '',
+                }))}>
+                {Object.entries(RELACIONES).map(([v, t]) => <option key={v} value={v}>{t}</option>)}
+              </select>
+            </div>
+            <div className="form-2col">
+              <div className="field">
+                <label htmlFor="nombreReceptor">Nombre de quien recibe</label>
+                <input id="nombreReceptor" required minLength={3} maxLength={100} value={formCobro.nombreReceptor}
+                  onChange={(e) => setFormCobro((f) => ({ ...f, nombreReceptor: e.target.value }))} />
+              </div>
+              <div className="field">
+                <label htmlFor="dniReceptor">DNI / documento</label>
+                <input id="dniReceptor" required inputMode="numeric" minLength={6} maxLength={15}
+                  pattern="[A-Za-z0-9]{6,15}" value={formCobro.dniReceptor}
+                  onChange={(e) => setFormCobro((f) => ({ ...f, dniReceptor: e.target.value }))} />
+              </div>
+            </div>
+            {pedidoACobrar.requierePin && (
+              <div className="field">
+                <label htmlFor="pinEntrega">Código de entrega (PIN)</label>
+                <input id="pinEntrega" required inputMode="numeric" autoComplete="one-time-code"
+                  pattern="[0-9]{6}" maxLength={6} className="input-pin" value={formCobro.pin}
+                  onChange={(e) => setFormCobro((f) => ({ ...f, pin: e.target.value.replace(/\D/g, '') }))} />
+                <p className="cell-secondary" style={{ marginTop: 4 }}>
+                  Pídeselo al destinatario: lo recibió el remitente al enviar el paquete. Sin el código no se puede entregar.
+                </p>
+              </div>
+            )}
+            <div className="field">
+              <span className="field-label">Firma de quien recibe</span>
+              <FirmaPad onChange={(firma) => setFormCobro((f) => ({ ...f, firma }))} />
+            </div>
             <div className="field">
               <label htmlFor="fotoEvidencia">Foto de evidencia (opcional)</label>
               <input

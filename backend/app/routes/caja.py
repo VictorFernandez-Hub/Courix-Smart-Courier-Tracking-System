@@ -21,8 +21,18 @@ from app.schemas import (
     LiquidacionRutaDto, PagoDto,
 )
 from app.servicios import (
-    efectivoEsperadoDeRuta, nombreEstado, obtener, paginar,
+    agenciaDelUsuario, efectivoEsperadoDeRuta, exigirAccesoPedido, exigirAccesoRuta, filtrarPorAgencia,
+    filtrarRutasPorAgencia, nombreEstado, obtener, paginar,
 )
+
+
+def _pagosVisibles():
+    """Un operador de agencia solo ve los pagos de los envios de su agencia."""
+    query = conexion.session.query(PagoModel)
+    propia = agenciaDelUsuario()
+    if propia:
+        query = filtrarPorAgencia(query.join(PedidoModel, PagoModel.pedidoId == PedidoModel.id), propia)
+    return query
 
 
 bp = Blueprint('caja', __name__)
@@ -33,8 +43,8 @@ bp = Blueprint('caja', __name__)
 def liquidacionesPendientes():
     rutas = conexion.session.query(RutaModel).outerjoin(
         LiquidacionRutaModel, LiquidacionRutaModel.rutaId == RutaModel.id
-    ).filter(RutaModel.estado == 'completada', LiquidacionRutaModel.id.is_(None)) \
-        .order_by(RutaModel.fecha).all()
+    ).filter(RutaModel.estado == 'completada', LiquidacionRutaModel.id.is_(None))
+    rutas = filtrarRutasPorAgencia(rutas, agenciaDelUsuario()).order_by(RutaModel.fecha).all()
 
     contenido = []
     for ruta in rutas:
@@ -54,7 +64,8 @@ def liquidacionesPendientes():
 @bp.route('/liquidaciones', methods=['GET'])
 @requiereRol(*ROLES_STAFF)
 def listarLiquidaciones():
-    query = conexion.session.query(LiquidacionRutaModel).order_by(LiquidacionRutaModel.id.desc())
+    query = conexion.session.query(LiquidacionRutaModel).join(RutaModel, LiquidacionRutaModel.rutaId == RutaModel.id)
+    query = filtrarRutasPorAgencia(query, agenciaDelUsuario()).order_by(LiquidacionRutaModel.id.desc())
     return paginar(query, LiquidacionRutaDto()), 200
 
 
@@ -66,6 +77,7 @@ def liquidarRuta(id):
     observacion = texto(data, 'observacion', maximo=1000)
 
     ruta = obtener(RutaModel, id, 'Ruta no existe', bloquear=True)
+    exigirAccesoRuta(ruta)
     if ruta.estado != 'completada':
         return {'message': 'Solo se puede liquidar una ruta completada'}, 409
     if conexion.session.query(LiquidacionRutaModel.id).filter_by(rutaId=id).first():
@@ -94,7 +106,7 @@ def liquidarRuta(id):
 @bp.route('/pagos', methods=['GET'])
 @requiereRol(*ROLES_STAFF)
 def listarPagos():
-    query = conexion.session.query(PagoModel)
+    query = _pagosVisibles()
     estadoPago = request.args.get('estado_pago')
     if estadoPago:
         query = query.filter_by(estadoPago=estadoPago)
@@ -103,7 +115,8 @@ def listarPagos():
         query = query.filter_by(metodo=metodo)
 
     respuesta = paginar(query.order_by(PagoModel.id.desc()), PagoDto())
-    total = conexion.session.query(func.coalesce(func.sum(PagoModel.monto), 0)).filter_by(estadoPago='pagado').scalar()
+    total = _pagosVisibles().with_entities(func.coalesce(func.sum(PagoModel.monto), 0)) \
+        .filter(PagoModel.estadoPago == 'pagado').scalar()
     respuesta['totalCobrado'] = str(aDecimal(total))
     return respuesta, 200
 
@@ -115,7 +128,7 @@ def pedidosConPagoRegistrado():
     ids = [int(x) for x in crudos.split(',')[:200] if x.strip().isdigit()]
     if not ids:
         return {'content': []}, 200
-    resultado = conexion.session.query(PagoModel.pedidoId).filter(PagoModel.pedidoId.in_(ids)).all()
+    resultado = _pagosVisibles().with_entities(PagoModel.pedidoId).filter(PagoModel.pedidoId.in_(ids)).all()
     return {'content': [r[0] for r in resultado]}, 200
 
 
@@ -132,6 +145,7 @@ def crearPago():
     referencia = texto(data, 'referencia', maximo=60)
 
     pedido = obtener(PedidoModel, pedidoId, 'Pedido no existe', bloquear=True)
+    exigirAccesoPedido(pedido)
     estado = nombreEstado(pedido.estadoId)
     if estado == 'cancelado':
         return {'message': 'No se puede registrar un pago para un pedido cancelado'}, 409
@@ -161,6 +175,7 @@ def crearPago():
 def marcarPagoComoPagado(id):
     data = cuerpoJson()
     pago = obtener(PagoModel, id, 'Pago no existe', bloquear=True)
+    exigirAccesoPedido(conexion.session.get(PedidoModel, pago.pedidoId))
     if pago.estadoPago == 'pagado':
         return {'message': 'Este pago ya estaba registrado como pagado'}, 409
     referencia = texto(data, 'referencia', maximo=60)
@@ -171,6 +186,8 @@ def marcarPagoComoPagado(id):
 
     pago.estadoPago = 'pagado'
     pago.fechaPago = func.now()
+    # Quien confirma el cobro es quien lo tiene en su caja (arqueo)
+    pago.registradoPorId = usuarioActualId()
     auditar('pago_marcado_pagado', 'pago', id)
     conexion.session.commit()
     return {'message': 'Pago registrado exitosamente'}, 200
